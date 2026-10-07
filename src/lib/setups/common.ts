@@ -134,6 +134,10 @@ export class Ease {
 		} else this.v += (target - this.v) * k;
 		return this.v;
 	}
+	/** Neste verdi hoppar rett til målet i staden for å glei dit. */
+	reset() {
+		this.init = false;
+	}
 }
 
 export const clamp01 = (x: number) => Math.min(1, Math.max(0, x));

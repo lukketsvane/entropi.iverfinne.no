@@ -64,6 +64,8 @@ export interface Setup {
 	meters(): Meters;
 	/** true viss oppsettet brukar trykket sjølv (då flyttast ikkje sonden) */
 	tap?(ctx: Ctx, x: number, y: number): boolean;
+	/** Trykk på parametrane: neste grovkorning. Returnerer ei kort lapp som vert vist ein augneblink. */
+	cycle?(ctx: Ctx): string;
 	dispose(): void;
 }
 
