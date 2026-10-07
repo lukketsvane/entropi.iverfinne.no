@@ -36,6 +36,8 @@
 	let flash = $state(false);
 
 	let engine: Engine | null = null;
+	let hinted = false;
+	let hintT = 0;
 	let toastT = 0;
 	let idleT = 0;
 	let lock: { release(): Promise<void> } | null = null;
@@ -136,6 +138,16 @@
 					count = n;
 					store.set('entropi.setup', String(idx));
 					say(i.blurb);
+					// ein einaste hint om at parametrane kan trykkast på
+					clearTimeout(hintT);
+					if (!hinted && !store.get('entropi.cyc') && engine?.canCycle) {
+						hintT = window.setTimeout(() => {
+							if (hinted) return;
+							hinted = true;
+							store.set('entropi.cyc', '1');
+							say('Trykk på talet nede til høgre: anna grovkorning.', 4200);
+						}, 6500);
+					}
 				},
 				onStall: () => {
 					if (!cameraAlive(video)) openCam();
@@ -177,6 +189,19 @@
 					openCam();
 					return;
 				}
+				// trykk på parametrane nede til høgre: neste grovkorning
+				const r = stage.getBoundingClientRect();
+				const onParams = x * r.width > r.width - 190 && y * r.height > r.height - 124;
+				if (onParams && engine?.canCycle) {
+					const label = engine.cycle();
+					if (label) {
+						say(label, 2600);
+						haptic(8);
+						hinted = true;
+						store.set('entropi.cyc', '1');
+						return;
+					}
+				}
 				const used = engine?.tap(x, y);
 				if (!used) probe = { x, y };
 				haptic(8);
@@ -205,6 +230,7 @@
 		openCam();
 
 		return () => {
+			clearTimeout(hintT);
 			document.removeEventListener('visibilitychange', vis);
 			off?.();
 			ro?.disconnect();

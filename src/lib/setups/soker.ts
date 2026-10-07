@@ -6,9 +6,11 @@ import { COVER_VIDEO, Ease, clamp01 } from './common';
  * Søkjar. Rein kamerabilete, og det einaste som er målt er det klassiske:
  * Shannon-entropien til lysnivåa i heile biletet, H = -Σ p·log2 p over 64 nivå (maks 6 bit).
  * Ein svart vegg og eit kaotisk grusfelt har same snittlys, men ulik H.
+ * Trykk på parametrane for å velje 16, 4 eller 256 nivå: same bilete, anna tal. Entropi finst berre i forhold til ei grovkorning.
  * Linjalen er ein vanleg lysmålar på sonden.
  */
-const BINS = 64;
+/** Grovkorningar ein kan bla gjennom ved å trykke på parametrane. 64 er standard. */
+const LEVELS = [64, 16, 4, 256];
 
 const FS = `${COVER_VIDEO}
 void main() {
@@ -31,6 +33,7 @@ export class Soker implements Setup {
 	};
 
 	private prog!: Prog;
+	private li = 0;
 	private H = 0;
 	private spot = 0.5;
 	private last = -1e9;
@@ -41,18 +44,34 @@ export class Soker implements Setup {
 		this.prog = ctx.gfx.prog('soker.draw', FS);
 	}
 
+	private get bins() {
+		return LEVELS[this.li];
+	}
+
+	cycle(): string {
+		this.li = (this.li + 1) % LEVELS.length;
+		this.last = -1e9;
+		this.eH.reset();
+		const b = this.bins;
+		return `${b} lysnivå, maks ${Math.log2(b)} bit. Same bilete, anna entropi.`;
+	}
+
 	frame(ctx: Ctx) {
 		if (ctx.now - this.last < 200) return;
 		const w = ctx.w;
 		const h = ctx.h;
+		const bins = this.bins;
+		const shift = 8 - Math.log2(bins);
 		const px = Math.round(ctx.probe[0] * (w - 1));
 		const py = Math.round(ctx.probe[1] * (h - 1));
 		const ok = ctx.read(ctx.cur, 0, 0, w, h, (b) => {
-			const hist = new Uint32Array(BINS);
+			// svaret kan kome etter at ein har trykt på parametrane: då er det frå ei gamal grovkorning
+			if (bins !== this.bins) return;
+			const hist = new Uint32Array(bins);
 			const n = w * h;
-			for (let i = 0; i < n; i++) hist[b[i * 4 + 3] >> 2]++;
+			for (let i = 0; i < n; i++) hist[b[i * 4 + 3] >> shift]++;
 			let H = 0;
-			for (let k = 0; k < BINS; k++) {
+			for (let k = 0; k < bins; k++) {
 				if (hist[k]) {
 					const p = hist[k] / n;
 					H -= p * Math.log2(p);
@@ -85,11 +104,11 @@ export class Soker implements Setup {
 	meters(): Meters {
 		const H = this.eH.step(this.H);
 		return {
-			gauge: clamp01(H / Math.log2(BINS)),
+			gauge: clamp01(H / Math.log2(this.bins)),
 			ruler: clamp01(this.eS.step(this.spot)),
 			value: H.toFixed(2),
 			chip: 'BIT',
-			params: `${BINS}B`,
+			params: `${this.bins}B`,
 			rulerEnds: ['−', '+']
 		};
 	}

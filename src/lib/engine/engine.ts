@@ -183,6 +183,22 @@ export class Engine {
 		return !!this.setup?.tap?.(c, x, 1 - y);
 	}
 
+	/** Neste grovkorning i oppsettet. null viss oppsettet ikkje har fleire. */
+	cycle(): string | null {
+		const s = this.setup;
+		if (!s?.cycle) return null;
+		try {
+			return s.cycle(this.ctx());
+		} catch (e) {
+			console.error('cycle feila', s.info.id, e);
+			return null;
+		}
+	}
+
+	get canCycle(): boolean {
+		return !!this.setup?.cycle;
+	}
+
 	/* ---------- køyring ---------- */
 
 	start() {

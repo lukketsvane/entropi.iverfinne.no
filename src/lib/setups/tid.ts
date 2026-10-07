@@ -9,8 +9,10 @@ import { COVER_VIDEO, Ease, MapMeter, RAMPS, clamp01 } from './common';
  * Ein stille scene gir rundt null (berre sensorstøy), jamn panorering og skjelving gir mykje.
  * Etterglød (ein glidande topp som døyr ut) viser kvar det nett skjedde noko.
  * Merk: dette er entropien til endringa, ikkje til sjølve biletet. Det er ei anna grovkorning enn Rom.
+ * Trykk på parametrane for å flytte støygolvet σ: ein høgare σ gjer at berre store endringar tel som nytt.
  */
-const SIG0 = 3.0; // gråtrinn, støynivået modellen reknar som «ingenting»
+/** Støynivået modellen reknar som «ingenting», i gråtrinn. Trykk på parametrane for å bla: 3 er standard. */
+const SIGS = [3, 6, 12, 1.5];
 const MAXB = 8;
 
 const FS_UPDATE = `
@@ -57,6 +59,7 @@ export class Tid implements Setup {
 	private dProg!: Prog;
 	private st: Target[] = [];
 	private si = 0;
+	private sg = 0;
 	private meter!: MapMeter;
 	private eG = new Ease();
 	private eS = new Ease();
@@ -74,6 +77,18 @@ export class Tid implements Setup {
 		}
 	}
 
+	private get sigma() {
+		return SIGS[this.sg];
+	}
+
+	cycle(): string {
+		this.sg = (this.sg + 1) % SIGS.length;
+		this.eG.reset();
+		this.eS.reset();
+		const s = this.sigma;
+		return `Støygolv σ = ${s} gråtrinn. Mindre enn det tel som ingenting.`;
+	}
+
 	frame(ctx: Ctx) {
 		const g = ctx.gfx;
 		const gl = g.gl;
@@ -84,7 +99,7 @@ export class Tid implements Setup {
 		g.sampler(this.uProg, 'uFrame', 0, ctx.cur.tex);
 		g.sampler(this.uProg, 'uPrevF', 1, ctx.prev.tex);
 		g.sampler(this.uProg, 'uState', 2, prev.tex);
-		gl.uniform1f(this.uProg.u('uSig'), SIG0);
+		gl.uniform1f(this.uProg.u('uSig'), this.sigma);
 		gl.uniform1f(this.uProg.u('uDecay'), 0.84);
 		// første bileta har ingen forgjengar
 		gl.uniform1f(this.uProg.u('uLive'), ctx.frameNo < 2 ? 0 : 1);
@@ -116,7 +131,7 @@ export class Tid implements Setup {
 			ruler: clamp01(sp / 4),
 			value: gm.toFixed(2),
 			chip: 'BIT',
-			params: `1/30 S${SIG0}`,
+			params: `1/30 S${this.sigma}`,
 			rulerEnds: ['−', '+']
 		};
 	}
