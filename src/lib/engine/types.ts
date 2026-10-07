@@ -16,10 +16,14 @@ export interface Meters {
 	rulerEnds: [string, string];
 }
 
+export type SetupGroup = 'rom' | 'tid' | 'dyn';
+
 export interface SetupInfo {
 	id: string;
 	/** tre-fire bokstavar, store, øvst til venstre */
 	code: string;
+	/** tema i veljaren: rom (ei grovkorning av biletet), tid, eller dynamikk (eit system som køyrer av seg sjølv) */
+	group: SetupGroup;
 	name: string;
 	/** éi linje på nynorsk som vert vist ein augneblink etter bytet */
 	blurb: string;
@@ -31,6 +35,8 @@ export interface SetupInfo {
 	how?: string;
 	/** oppsettet vil ha trykk-og-hald (touch), ikkje berre eit trykk. Sonden fylgjer fingeren. */
 	press?: boolean;
+	/** oppsettet går ut frå at kameraet står i ro: det digitale stativet trekker frå handskjelven før oppsettet ser biletet */
+	still?: boolean;
 }
 
 /** Alt eit oppsett treng for å kunne teikne eitt bilete. */
@@ -72,6 +78,8 @@ export interface Setup {
 	touch?(ctx: Ctx, x: number, y: number, down: boolean): void;
 	/** Trykk på parametrane: neste grovkorning. Returnerer ei kort lapp som vert vist ein augneblink. */
 	cycle?(ctx: Ctx): string;
+	/** Til testar: lèt ein hente interne tal (til dømes eit utsnitt av eit kart) utan å gå via biletet. */
+	debug?(ctx: Ctx, arg?: unknown): unknown;
 	dispose(): void;
 }
 

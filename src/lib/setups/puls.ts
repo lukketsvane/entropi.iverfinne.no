@@ -300,11 +300,13 @@ export class Puls implements Setup {
 	readonly info: SetupInfo = {
 		id: 'puls',
 		code: 'PUL',
+		group: 'tid',
 		name: 'Puls',
 		blurb: 'Forsterkar det som svingar sakte. Pulsen din vert synleg som ei fargebølgje i huda.',
 		how: 'Lene telefonen mot noko, og hald handa eller andletet roleg framfor. Trykk på huda for å måle. Trykk på talet nede til høgre for anna band.',
 		needsFloat: true,
-		probe: true
+		probe: true,
+		still: true
 	};
 
 	private xP!: Prog;

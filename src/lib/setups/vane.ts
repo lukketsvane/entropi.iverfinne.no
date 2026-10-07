@@ -68,11 +68,13 @@ export class Vane implements Setup {
 	readonly info: SetupInfo = {
 		id: 'vane',
 		code: 'VAN',
+		group: 'tid',
 		name: 'Vane',
 		blurb: 'Eit kamera som vert lei. Berre det som er nytt vert lyst opp.',
 		how: 'Hald stille: verda forsvinn. Rør deg: du lyser. Det som blir verande vert vant til.',
 		needsFloat: true,
-		probe: true
+		probe: true,
+		still: true
 	};
 
 	private mP!: Prog;

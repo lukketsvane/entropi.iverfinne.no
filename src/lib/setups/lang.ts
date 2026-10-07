@@ -71,11 +71,13 @@ export class Lang implements Setup {
 	readonly info: SetupInfo = {
 		id: 'lang',
 		code: 'LAN',
+		group: 'tid',
 		name: 'Open Shutter',
 		blurb: 'Lang eksponering. Det som rører seg forsvinn, det som står stille vert att.',
 		how: 'Set telefonen i ro. La folk gå forbi, eller veiv. Trykk på talet nede til høgre for lengre eksponering.',
 		needsFloat: true,
-		probe: true
+		probe: true,
+		still: true
 	};
 
 	private uP!: Prog;

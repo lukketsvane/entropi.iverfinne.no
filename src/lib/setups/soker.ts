@@ -26,6 +26,7 @@ export class Soker implements Setup {
 	readonly info: SetupInfo = {
 		id: 'soker',
 		code: 'SØK',
+		group: 'rom',
 		name: 'Søkjar',
 		blurb: 'Rein søkjar. Tal: entropien til lysnivåa i heile biletet.',
 		how: 'Peik mot ein flat vegg og mot grus og sjå talet. Trykk på talet nede til høgre for 16, 4 eller 256 nivå.',

@@ -49,11 +49,13 @@ export class Tid implements Setup {
 	readonly info: SetupInfo = {
 		id: 'tid',
 		code: 'TID',
+		group: 'tid',
 		name: 'Tid',
 		blurb: 'Nyheit. Kor mykje nytt kjem inn per bilete, i bit per piksel.',
 		how: 'Hald stille, og veiv så. Trykk på talet nede til høgre for anna støygolv.',
 		needsFloat: true,
-		probe: true
+		probe: true,
+		still: true
 	};
 
 	private uProg!: Prog;
