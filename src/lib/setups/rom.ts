@@ -81,6 +81,7 @@ export class Rom implements Setup {
 		code: 'ROM',
 		name: 'Rom',
 		blurb: 'Lokal entropi. Kor uordna er kvar flekk: 9×9 piksel, 16 nivå.',
+		how: 'Peik mot noko flatt og noko rotete. Trykk på talet nede til høgre for anna grovkorning.',
 		needsFloat: true,
 		probe: true
 	};

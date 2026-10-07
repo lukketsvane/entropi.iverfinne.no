@@ -60,20 +60,28 @@ export class MapMeter {
 	spotA = 0;
 	globalB = 0;
 	spotB = 0;
+	globalC = 0;
+	spotC = 0;
+	/** kor mange lesingar som har kome attende. Ei ny lesing = eit nytt prøvepunkt. */
+	count = 0;
 
-	constructor(private gfx: Gfx) {
-		this.stat = gfx.target(2, 1, gfx.U8, false);
+	/** nch: talet på kanalar å lese, 2 eller 3 */
+	constructor(
+		private gfx: Gfx,
+		private nch = 2
+	) {
+		this.stat = gfx.target(nch, 1, gfx.U8, false);
 		this.prog = gfx.prog(
 			'mapmeter',
 			`${PACK}
 uniform sampler2D uMap;
 uniform vec2 uProbe;
-uniform ivec2 uCh;
+uniform ivec3 uCh;
 uniform int uR;
 float pick(vec4 c, int k) { return k == 0 ? c.r : k == 1 ? c.g : k == 2 ? c.b : c.a; }
 void main() {
 	int i = int(gl_FragCoord.x);
-	int ch = i == 0 ? uCh.x : uCh.y;
+	int ch = i == 0 ? uCh.x : i == 1 ? uCh.y : uCh.z;
 	ivec2 s3 = textureSize(uMap, 3);
 	float acc = 0.0;
 	for (int y = 0; y < s3.y; y++) {
@@ -99,7 +107,7 @@ void main() {
 	}
 
 	/** map må vere laga med mips. chA/chB: kanal 0..3. Lesinga kjem 1 til 3 bilete seinare. */
-	run(ctx: Ctx, map: Target, chA: number, chB: number) {
+	run(ctx: Ctx, map: Target, chA: number, chB: number, chC = 0) {
 		const g = this.gfx;
 		const gl = g.gl;
 		g.mipmap(map);
@@ -107,14 +115,19 @@ void main() {
 		g.use(this.prog);
 		g.sampler(this.prog, 'uMap', 0, map.tex);
 		gl.uniform2f(this.prog.u('uProbe'), ctx.probe[0], ctx.probe[1]);
-		gl.uniform2i(this.prog.u('uCh'), chA, chB);
+		gl.uniform3i(this.prog.u('uCh'), chA, chB, chC);
 		gl.uniform1i(this.prog.u('uR'), 10);
 		g.quad();
-		ctx.read(this.stat, 0, 0, 2, 1, (b) => {
+		ctx.read(this.stat, 0, 0, this.nch, 1, (b) => {
 			this.globalA = unpack16(b, 0);
 			this.spotA = unpack16(b, 2);
 			this.globalB = unpack16(b, 4);
 			this.spotB = unpack16(b, 6);
+			if (this.nch > 2) {
+				this.globalC = unpack16(b, 8);
+				this.spotC = unpack16(b, 10);
+			}
+			this.count++;
 		});
 	}
 

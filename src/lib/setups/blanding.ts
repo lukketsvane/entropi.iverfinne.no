@@ -71,6 +71,7 @@ export class Blanding implements Setup {
 		code: 'BLA',
 		name: 'Blanding',
 		blurb: 'Same piksel, tapt rekkjefølgje. Trykk: snu tida.',
+		how: 'Trykk på biletet: pikslane byter plass etter faste reglar. Trykk att: tida går baklengs og biletet kjem tilbake.',
 		needsFloat: false,
 		probe: false
 	};

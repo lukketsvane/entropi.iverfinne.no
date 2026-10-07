@@ -98,6 +98,7 @@ export class Pil implements Setup {
 		code: 'PIL',
 		name: 'Tidspil',
 		blurb: 'Der tida går éi veg. Varmt: brått opp, sakte ned. Kaldt: omvendt.',
+		how: 'Gjer ei rørsle. Varmt er brått opp og sakte ned, kaldt er omvendt. Trykk på talet nede til høgre for anna tidsvindauge.',
 		needsFloat: true,
 		probe: true
 	};

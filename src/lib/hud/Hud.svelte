@@ -17,6 +17,8 @@
 		hold: number;
 		/** augneblinks-tekst nede, tom = skjult */
 		toast: string;
+		/** kor lenge lappen står, ms */
+		toastMs?: number;
 		/** tekst midt på skjermen ved oppstart og feil */
 		message: { title: string; body?: string } | null;
 		idle: boolean;
@@ -36,6 +38,7 @@
 		probeOn = true,
 		hold,
 		toast,
+		toastMs = 3200,
 		message,
 		idle,
 		index,
@@ -195,7 +198,7 @@
 
 	{#if toast}
 		{#key toast}
-			<div class="toast">{toast}</div>
+			<div class="toast" style="--ms:{toastMs}ms">{toast}</div>
 		{/key}
 	{/if}
 
@@ -459,7 +462,7 @@
 		letter-spacing: 0.01em;
 		color: rgba(255, 255, 255, 0.92);
 		text-shadow: var(--halo), 0 0 14px rgba(0, 0, 0, 0.8);
-		animation: toast 3.2s var(--ease) both;
+		animation: toast var(--ms, 3200ms) var(--ease) both;
 	}
 	@keyframes toast {
 		0% {
