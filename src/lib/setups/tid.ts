@@ -51,6 +51,7 @@ export class Tid implements Setup {
 		code: 'TID',
 		name: 'Tid',
 		blurb: 'Nyheit. Kor mykje nytt kjem inn per bilete, i bit per piksel.',
+		how: 'Hald stille, og veiv så. Trykk på talet nede til høgre for anna støygolv.',
 		needsFloat: true,
 		probe: true
 	};

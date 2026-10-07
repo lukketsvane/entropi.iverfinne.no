@@ -32,6 +32,7 @@
 	let probe = $state({ x: 0.5, y: 0.5 });
 	let hold = $state(0);
 	let toast = $state('');
+	let toastMs = $state(3300);
 	let idle = $state(false);
 	let flash = $state(false);
 
@@ -59,8 +60,18 @@
 		}
 	};
 
+	const seen = new Set((store.get('entropi.seen') ?? '').split(',').filter(Boolean));
+	let pressing = false;
+	let pressOk = false;
+
+	/** hjørna er til info (oppe til venstre) og grovkorning (nede til høgre), ikkje til å trykkje på biletet */
+	function corner(px: number, py: number, w: number, h: number) {
+		return (px < 150 && py < 112) || (px > w - 190 && py > h - 124);
+	}
+
 	function say(text: string, ms = 3300) {
 		toast = text;
+		toastMs = ms;
 		clearTimeout(toastT);
 		toastT = window.setTimeout(() => (toast = ''), ms);
 	}
@@ -136,8 +147,15 @@
 					info = i;
 					index = idx;
 					count = n;
-					store.set('entropi.setup', String(idx));
-					say(i.blurb);
+					store.set('entropi.setup', i.id);
+					pressing = false;
+					const first = !seen.has(i.id);
+					if (first) {
+						seen.add(i.id);
+						store.set('entropi.seen', [...seen].join(','));
+					}
+					if (first && i.how) say(`${i.blurb} ${i.how}`, 7600);
+					else say(i.blurb);
 					// ein einaste hint om at parametrane kan trykkast på
 					clearTimeout(hintT);
 					if (!hinted && !store.get('entropi.cyc') && engine?.canCycle) {
@@ -146,7 +164,7 @@
 							hinted = true;
 							store.set('entropi.cyc', '1');
 							say('Trykk på talet nede til høgre: anna grovkorning.', 4200);
-						}, 6500);
+						}, 9500);
 					}
 				},
 				onStall: () => {
@@ -163,8 +181,8 @@
 			return;
 		}
 
-		const saved = parseInt(store.get('entropi.setup') ?? '0', 10);
-		if (Number.isFinite(saved)) engine.go(saved);
+		const saved = store.get('entropi.setup');
+		if (saved) engine.goId(saved);
 
 		ro = new ResizeObserver(() => {
 			const r = stage.getBoundingClientRect();
@@ -178,20 +196,40 @@
 			holdMs: 1200,
 			onTouch: touched,
 			onProgress: (p) => (hold = p),
-			onHold: () => {
-				engine?.next();
+			onHold: (dir) => {
+				if (dir < 0) engine?.prev();
+				else engine?.next();
 				flash = true;
 				haptic([14, 40, 14]);
 				setTimeout(() => (flash = false), 110);
+			},
+			onPoint: (x, y, down) => {
+				if (status !== 'ready' || !engine) return;
+				if (down && !pressing) {
+					const r = stage.getBoundingClientRect();
+					pressOk = engine.pressable && !corner(x * r.width, y * r.height, r.width, r.height);
+				}
+				if (!pressOk) return;
+				pressing = down;
+				engine.touch(x, y, down);
+				if (down) probe = { x, y };
 			},
 			onTap: (x, y) => {
 				if (status !== 'ready') {
 					openCam();
 					return;
 				}
-				// trykk på parametrane nede til høgre: neste grovkorning
 				const r = stage.getBoundingClientRect();
-				const onParams = x * r.width > r.width - 190 && y * r.height > r.height - 124;
+				const px = x * r.width;
+				const py = y * r.height;
+				// trykk på koden oppe til venstre: forklaring
+				if (px < 150 && py < 112 && info) {
+					say(info.how ? `${info.blurb} ${info.how}` : info.blurb, 7600);
+					haptic(8);
+					return;
+				}
+				// trykk på parametrane nede til høgre: neste grovkorning
+				const onParams = px > r.width - 190 && py > r.height - 124;
 				if (onParams && engine?.canCycle) {
 					const label = engine.cycle();
 					if (label) {
@@ -259,6 +297,7 @@
 		probeOn={info?.probe ?? true}
 		{hold}
 		{toast}
+		{toastMs}
 		{message}
 		{idle}
 		{index}

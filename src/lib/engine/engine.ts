@@ -172,6 +172,24 @@ export class Engine {
 		}
 	}
 
+	prev(): void {
+		for (let k = 1; k <= this.count; k++) {
+			const i = (((this.idx - k) % this.count) + this.count) % this.count;
+			if (this.ok[i]) {
+				this.go(i);
+				return;
+			}
+		}
+	}
+
+	/** Gå til oppsettet med denne id-en. false viss det ikkje finst. */
+	goId(id: string): boolean {
+		const i = this.infos.findIndex((x) => x.id === id);
+		if (i < 0) return false;
+		this.go(i);
+		return true;
+	}
+
 	setProbe(x: number, y: number) {
 		this.probe = [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, 1 - y))];
 	}
@@ -181,6 +199,22 @@ export class Engine {
 		const c = this.ctx();
 		this.setProbe(x, y);
 		return !!this.setup?.tap?.(c, x, 1 - y);
+	}
+
+	/** Eitt finger nede (down=true, også medan det dreg) eller sleppt. Skjermkoordinatar 0..1, origo øvst til venstre. */
+	touch(x: number, y: number, down: boolean): void {
+		const s = this.setup;
+		if (down) this.setProbe(x, y);
+		if (!s?.touch) return;
+		try {
+			s.touch(this.ctx(), Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, 1 - y)), down);
+		} catch (e) {
+			console.error('touch feila', s.info.id, e);
+		}
+	}
+
+	get pressable(): boolean {
+		return !!this.info.press;
 	}
 
 	/** Neste grovkorning i oppsettet. null viss oppsettet ikkje har fleire. */

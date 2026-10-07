@@ -27,6 +27,10 @@ export interface SetupInfo {
 	needsFloat: boolean;
 	/** viser sondepunktet (spotmålar) */
 	probe: boolean;
+	/** éi linje på nynorsk om kva ein gjer: vert vist saman med blurb første gongen, og når ein trykkjer på koden */
+	how?: string;
+	/** oppsettet vil ha trykk-og-hald (touch), ikkje berre eit trykk. Sonden fylgjer fingeren. */
+	press?: boolean;
 }
 
 /** Alt eit oppsett treng for å kunne teikne eitt bilete. */
@@ -64,6 +68,8 @@ export interface Setup {
 	meters(): Meters;
 	/** true viss oppsettet brukar trykket sjølv (då flyttast ikkje sonden) */
 	tap?(ctx: Ctx, x: number, y: number): boolean;
+	/** Eitt finger nede eller dratt: x,y 0..1 med origo nede til venstre. down=false når fingeren slepp. */
+	touch?(ctx: Ctx, x: number, y: number, down: boolean): void;
 	/** Trykk på parametrane: neste grovkorning. Returnerer ei kort lapp som vert vist ein augneblink. */
 	cycle?(ctx: Ctx): string;
 	dispose(): void;

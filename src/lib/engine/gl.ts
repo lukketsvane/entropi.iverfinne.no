@@ -186,7 +186,7 @@ export class Gfx {
 	}
 
 	/** Bind ein tekstur til ein eining og knyt han til ein sampler-uniform. */
-	sampler(p: Prog, name: string, unit: number, tex: WebGLTexture | null, target = this.gl.TEXTURE_2D) {
+	sampler(p: Prog, name: string, unit: number, tex: WebGLTexture | null, target: number = this.gl.TEXTURE_2D) {
 		const gl = this.gl;
 		gl.activeTexture(gl.TEXTURE0 + unit);
 		gl.bindTexture(target, tex);
