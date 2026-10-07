@@ -2,10 +2,10 @@
 	import { onMount } from 'svelte';
 	import { updated } from '$app/state';
 	import { version } from '$app/env';
-	import Hud from '../lib/hud/Hud.svelte';
+	import Picker from '../lib/hud/Picker.svelte';
 	import { Engine } from '../lib/engine/engine';
 	import { CamError, cameraAlive, startCamera } from '../lib/engine/camera';
-	import type { Meters, SetupInfo } from '../lib/engine/types';
+	import type { SetupInfo } from '../lib/engine/types';
 	import { attachGestures } from '../lib/gesture';
 	import { haptic } from '../lib/haptics';
 	import { SETUPS } from '../lib/setups';
@@ -14,33 +14,18 @@
 	let canvas: HTMLCanvasElement;
 	let video: HTMLVideoElement;
 
-	type Status = 'boot' | 'needtap' | 'ready' | 'denied' | 'none' | 'insecure' | 'error';
-	let status = $state<Status>('boot');
-	let errText = $state('');
+	/** Ingen tekst og ingen HUD: berre biletet. Kameraet sin tilstand går til konsollen. */
+	type Status = 'boot' | 'needtap' | 'ready' | 'failed';
+	let status: Status = 'boot';
 
-	let info = $state<SetupInfo | null>(null);
 	let index = $state(0);
-	let count = $state(SETUPS.length);
-	let m = $state<Meters>({
-		gauge: 0,
-		ruler: 0.5,
-		value: '.',
-		chip: 'BIT',
-		params: '',
-		rulerEnds: ['−', '+']
-	});
-	let probe = $state({ x: 0.5, y: 0.5 });
-	let hold = $state(0);
-	let toast = $state('');
-	let toastMs = $state(3300);
-	let idle = $state(false);
 	let flash = $state(false);
+	let picker = $state(false);
+	let seenIds = $state<string[]>([]);
+	let avail = $state<boolean[]>([]);
+	let infos = $state<readonly SetupInfo[]>([]);
 
 	let engine: Engine | null = null;
-	let hinted = false;
-	let hintT = 0;
-	let toastT = 0;
-	let idleT = 0;
 	let lock: { release(): Promise<void> } | null = null;
 
 	const store = {
@@ -64,22 +49,37 @@
 	let pressing = false;
 	let pressOk = false;
 
-	/** hjørna er til info (oppe til venstre) og grovkorning (nede til høgre), ikkje til å trykkje på biletet */
+	/**
+	 * To usynlege felt: oppe til venstre (langt trykk: veljaren) og nede til høgre (trykk: neste grovkorning).
+	 * Dei vert ikkje brukte til å trykkje på biletet.
+	 */
 	function corner(px: number, py: number, w: number, h: number) {
 		return (px < 150 && py < 112) || (px > w - 190 && py > h - 124);
 	}
 
-	function say(text: string, ms = 3300) {
-		toast = text;
-		toastMs = ms;
-		clearTimeout(toastT);
-		toastT = window.setTimeout(() => (toast = ''), ms);
+	function openPicker() {
+		if (!engine || status !== 'ready') return false;
+		infos = engine.list;
+		avail = engine.list.map((_, k) => engine!.available(k));
+		seenIds = [...seen];
+		picker = true;
+		haptic([10, 30, 10]);
+		return true;
 	}
 
-	function touched() {
-		idle = false;
-		clearTimeout(idleT);
-		idleT = window.setTimeout(() => (idle = true), 4500);
+	function pick(i: number) {
+		picker = false;
+		if (!engine) return;
+		if (i !== engine.index) {
+			engine.go(i);
+			blink();
+		}
+		haptic(12);
+	}
+
+	function blink() {
+		flash = true;
+		setTimeout(() => (flash = false), 110);
 	}
 
 	async function wake() {
@@ -101,40 +101,14 @@
 			engine?.start();
 			wake();
 		} catch (e) {
-			if (e instanceof CamError) {
-				if (e.kind === 'denied') status = 'needtap';
-				else if (e.kind === 'none') status = 'none';
-				else if (e.kind === 'insecure') status = 'insecure';
-				else {
-					status = 'error';
-					errText = e.message;
-				}
-				if (e.kind === 'denied') errText = 'denied';
-			} else {
-				status = 'error';
-				errText = String(e);
+			// 'needtap': iOS vil ha eit trykk før kameraet startar. Alt anna er feil, og står i konsollen.
+			if (e instanceof CamError && e.kind === 'denied') status = 'needtap';
+			else {
+				status = 'failed';
+				console.error('kamera', e);
 			}
 		}
 	}
-
-	const message = $derived.by(() => {
-		switch (status) {
-			case 'boot':
-				return { title: 'STARTAR KAMERA', body: 'Tillat kamera om iOS spør.' };
-			case 'needtap':
-				return { title: 'TRYKK FOR Å STARTE', body: 'Appen treng kameraet. Nektar du, slå det på i Innstillingar.' };
-			case 'denied':
-				return { title: 'KAMERA NEKTA', body: 'Slå på kamera for appen i Innstillingar og opne på nytt.' };
-			case 'none':
-				return { title: 'FANN INGEN KAMERA', body: 'Opne sida på ein iPhone. Til testing: legg til ?src=video.webm.' };
-			case 'insecure':
-				return { title: 'KREV HTTPS', body: 'Nettlesaren gir berre kamera på sikre sider.' };
-			case 'error':
-				return { title: 'FEIL', body: errText };
-			default:
-				return null;
-		}
-	});
 
 	onMount(() => {
 		let off: (() => void) | null = null;
@@ -142,42 +116,28 @@
 
 		try {
 			engine = new Engine(canvas, video, SETUPS, {
-				onMeters: (v) => (m = v),
-				onSetup: (i, idx, n) => {
-					info = i;
+				onSetup: (i, idx) => {
 					index = idx;
-					count = n;
 					store.set('entropi.setup', i.id);
 					pressing = false;
-					const first = !seen.has(i.id);
-					if (first) {
+					if (!seen.has(i.id)) {
 						seen.add(i.id);
 						store.set('entropi.seen', [...seen].join(','));
 					}
-					if (first && i.how) say(`${i.blurb} ${i.how}`, 7600);
-					else say(i.blurb);
-					// ein einaste hint om at parametrane kan trykkast på
-					clearTimeout(hintT);
-					if (!hinted && !store.get('entropi.cyc') && engine?.canCycle) {
-						hintT = window.setTimeout(() => {
-							if (hinted) return;
-							hinted = true;
-							store.set('entropi.cyc', '1');
-							say('Trykk på talet nede til høgre: anna grovkorning.', 4200);
-						}, 9500);
-					}
+					seenIds = [...seen];
+					if (engine) avail = engine.list.map((_, k) => engine!.available(k));
 				},
 				onStall: () => {
 					if (!cameraAlive(video)) openCam();
 				},
 				onFatal: (e) => {
-					status = 'error';
-					errText = e.message;
+					status = 'failed';
+					console.error('motor', e);
 				}
 			});
 		} catch (e) {
-			status = 'error';
-			errText = String((e as Error).message ?? e);
+			status = 'failed';
+			console.error('motor', e);
 			return;
 		}
 
@@ -194,14 +154,18 @@
 
 		off = attachGestures(stage, {
 			holdMs: 1200,
-			onTouch: touched,
-			onProgress: (p) => (hold = p),
+			onLong: (x, y) => {
+				if (picker) return false;
+				const r = stage.getBoundingClientRect();
+				// langt trykk oppe til venstre: veljaren
+				if (x * r.width < 150 && y * r.height < 112) return openPicker();
+				return false;
+			},
 			onHold: (dir) => {
 				if (dir < 0) engine?.prev();
 				else engine?.next();
-				flash = true;
+				blink();
 				haptic([14, 40, 14]);
-				setTimeout(() => (flash = false), 110);
 			},
 			onPoint: (x, y, down) => {
 				if (status !== 'ready' || !engine) return;
@@ -212,7 +176,6 @@
 				if (!pressOk) return;
 				pressing = down;
 				engine.touch(x, y, down);
-				if (down) probe = { x, y };
 			},
 			onTap: (x, y) => {
 				if (status !== 'ready') {
@@ -222,26 +185,13 @@
 				const r = stage.getBoundingClientRect();
 				const px = x * r.width;
 				const py = y * r.height;
-				// trykk på koden oppe til venstre: forklaring
-				if (px < 150 && py < 112 && info) {
-					say(info.how ? `${info.blurb} ${info.how}` : info.blurb, 7600);
+				// trykk nede til høgre: neste grovkorning
+				if (px > r.width - 190 && py > r.height - 124 && engine?.canCycle) {
+					engine.cycle();
 					haptic(8);
 					return;
 				}
-				// trykk på parametrane nede til høgre: neste grovkorning
-				const onParams = px > r.width - 190 && py > r.height - 124;
-				if (onParams && engine?.canCycle) {
-					const label = engine.cycle();
-					if (label) {
-						say(label, 2600);
-						haptic(8);
-						hinted = true;
-						store.set('entropi.cyc', '1');
-						return;
-					}
-				}
-				const used = engine?.tap(x, y);
-				if (!used) probe = { x, y };
+				engine?.tap(x, y);
 				haptic(8);
 			}
 		});
@@ -264,11 +214,9 @@
 		};
 		console.info(`entropi ${version}`);
 
-		touched();
 		openCam();
 
 		return () => {
-			clearTimeout(hintT);
 			document.removeEventListener('visibilitychange', vis);
 			off?.();
 			ro?.disconnect();
@@ -286,23 +234,7 @@
 	<video bind:this={video} class="src" muted playsinline autoplay></video>
 	<canvas bind:this={canvas}></canvas>
 	<div class="flash" class:on={flash}></div>
-	<Hud
-		code={info?.code ?? ''}
-		chip={m.chip}
-		value={m.value}
-		params={m.params}
-		gauge={m.gauge}
-		ruler={m.ruler}
-		{probe}
-		probeOn={info?.probe ?? true}
-		{hold}
-		{toast}
-		{toastMs}
-		{message}
-		{idle}
-		{index}
-		{count}
-	/>
+	<Picker open={picker} {infos} {index} seen={seenIds} {avail} onpick={pick} onclose={() => (picker = false)} />
 </div>
 
 <style>

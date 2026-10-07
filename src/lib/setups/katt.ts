@@ -144,6 +144,7 @@ export class Katt implements Setup {
 	readonly info: SetupInfo = {
 		id: 'katt',
 		code: 'KAT',
+		group: 'dyn',
 		name: 'Katten',
 		blurb: 'Eit bilete vert blanda til snø etter ei fast regel, og kjem tilbake som det var.',
 		how: 'Vent litt, eller trykk for å ta eit nytt bilete. Trykk på talet nede til høgre for anna oppløysing.',

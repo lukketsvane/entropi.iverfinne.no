@@ -3,24 +3,30 @@
  *  - eitt trykk: onTap(x, y), koordinatar 0..1 (origo øvst til venstre)
  *  - eitt finger nede eller dratt: onPoint(x, y, true), og onPoint(x, y, false) når det slepp
  *    (eller når eit nytt finger kjem til, då er det ikkje lenger eit pek)
+ *  - eitt finger haldt i ro i longMs: onLong(x, y). Trykket etterpå vert ikkje eit trykk.
  *  - to fingrar haldne nede i holdMs: onHold(1), med framdrift 0..1 via onProgress()
  *  - tre fingrar haldne nede i holdMs: onHold(-1), same framdrift
  * Alt anna (klyping, rulling, dobbeltrykk-zoom) vert slått av.
  */
 export interface GestureOpts {
 	holdMs?: number;
+	/** kor lenge eitt finger må liggje i ro for eit langt trykk, ms */
+	longMs?: number;
 	/** kor langt fingrane får gli før haldet vert avbrote, i piksel */
 	slop?: number;
 	onTap(x: number, y: number): void;
 	/** 1 = to fingrar (neste), -1 = tre fingrar (forrige) */
 	onHold(dir: 1 | -1): void;
-	onProgress(p: number): void;
+	onProgress?(p: number): void;
 	onTouch?(): void;
 	onPoint?(x: number, y: number, down: boolean): void;
+	/** Langt trykk med eitt finger. Returnerer true viss det vart brukt (då vert fingeren ikkje eit pek lenger). */
+	onLong?(x: number, y: number): boolean | void;
 }
 
 export function attachGestures(el: HTMLElement, o: GestureOpts): () => void {
 	const holdMs = o.holdMs ?? 1200;
+	const longMs = o.longMs ?? 520;
 	const slop = o.slop ?? 28;
 	const pts = new Map<number, { x: number; y: number; x0: number; y0: number; t0: number }>();
 	let holdStart = 0;
@@ -29,12 +35,19 @@ export function attachGestures(el: HTMLElement, o: GestureOpts): () => void {
 	let multi = false; // har det vore to fingrar eller fleire i dette gestet
 	let progress = 0;
 	let pointDown = false;
+	let longT = 0;
+	let longUsed = false;
 	let last: [number, number] = [0.5, 0.5];
+
+	const stopLong = () => {
+		clearTimeout(longT);
+		longT = 0;
+	};
 
 	const setProgress = (p: number) => {
 		if (p !== progress) {
 			progress = p;
-			o.onProgress(p);
+			o.onProgress?.(p);
 		}
 	};
 
@@ -103,7 +116,19 @@ export function attachGestures(el: HTMLElement, o: GestureOpts): () => void {
 			last = norm(e.clientX, e.clientY);
 			pointDown = true;
 			o.onPoint?.(last[0], last[1], true);
-		}
+			stopLong();
+			if (o.onLong) {
+				const at: [number, number] = [last[0], last[1]];
+				longT = window.setTimeout(() => {
+					longT = 0;
+					if (pts.size !== 1 || multi || moved()) return;
+					if (o.onLong?.(at[0], at[1])) {
+						longUsed = true;
+						releasePoint();
+					}
+				}, longMs);
+			}
+		} else stopLong();
 		if ((pts.size === 2 || pts.size === 3) && !fired) startHold();
 		else if (pts.size > 3) stopHold();
 	};
@@ -114,6 +139,7 @@ export function attachGestures(el: HTMLElement, o: GestureOpts): () => void {
 		p.x = e.clientX;
 		p.y = e.clientY;
 		if (holdStart && moved()) stopHold();
+		if (longT && moved()) stopLong();
 		if (pointDown && pts.size === 1) {
 			last = norm(e.clientX, e.clientY);
 			o.onPoint?.(last[0], last[1], true);
@@ -127,21 +153,27 @@ export function attachGestures(el: HTMLElement, o: GestureOpts): () => void {
 		const dt = performance.now() - p.t0;
 		const d = Math.hypot(e.clientX - p.x0, e.clientY - p.y0);
 		if (pts.size < 2) stopHold();
+		stopLong();
 		if (pts.size === 0) {
 			if (pointDown) {
 				last = norm(e.clientX, e.clientY);
 				releasePoint();
 			}
-			if (!multi && !fired && dt < 450 && d < 14 && e.type === 'pointerup') {
+			if (!multi && !fired && !longUsed && dt < 450 && d < 14 && e.type === 'pointerup') {
 				const [x, y] = norm(e.clientX, e.clientY);
 				o.onTap(x, y);
 			}
 			multi = false;
 			fired = false;
+			longUsed = false;
 		}
 	};
 
-	const stop = (e: Event) => e.preventDefault();
+	const stop = (e: Event) => {
+		// rullefelt (veljaren) får rulle med fingeren
+		if ((e.target as Element | null)?.closest?.('[data-scroll]')) return;
+		e.preventDefault();
+	};
 	const opts = { passive: false } as AddEventListenerOptions;
 
 	el.addEventListener('pointerdown', down);
@@ -157,6 +189,7 @@ export function attachGestures(el: HTMLElement, o: GestureOpts): () => void {
 
 	return () => {
 		stopHold();
+		stopLong();
 		releasePoint();
 		el.removeEventListener('pointerdown', down);
 		el.removeEventListener('pointermove', move);

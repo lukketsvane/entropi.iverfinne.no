@@ -1,6 +1,6 @@
 # entropi
 
-Eit kamera som måler uorden. På skjermen er det berre ein søkjar med HUD. Kvar oppstilling er eit instrument: ei grovkorning av verda, og eit tal.
+Eit kamera som måler uorden. På skjermen er det berre biletet: ingen tekst, ingen ramme. Kvar oppstilling er eit instrument for ei grovkorning av verda.
 
 **https://entropi.iverfinne.no**
 
@@ -8,28 +8,19 @@ Eit kamera som måler uorden. På skjermen er det berre ein søkjar med HUD. Kva
 
 1. Opne sida i Safari.
 2. Del, så «Legg til på heimskjerm». Opne frå ikonet. Gje kameraet løyve.
-3. **Hald to fingrar nede i omlag eitt sekund** for neste oppstilling. **Tre fingrar** gir førre. Ringen rundt sikta fyller seg medan du held.
-4. **Trykk på koden øvst til venstre** (til dømes «KAT»): forklaringa kjem fram att.
-5. **Trykk på parametrane nede til høgre** (til dømes «FIN»): neste grovkorning i same oppstillinga.
-6. **Eitt trykk** gjer noko ulikt i kvar oppstilling (sjå tabellen). Elles flyttar det sonden, punktmålaren.
-7. Dei fleste tidsoppstillingane vil ha telefonen i ro. Lene han mot noko.
+3. **Hald to fingrar nede i omlag eitt sekund** for neste oppstilling. **Tre fingrar** gir førre. Skjermen blinkar og det tikkar når det tok.
+4. **Hald ein finger nede oppe til venstre** (omlag eit halvt sekund): veljaren med alle oppsetta, ordna i ROM, TIDSLØP og DYNAMIKK. Trykk på eit for å gå dit. Ein prikk betyr at du ikkje har vore innom det enno.
+5. **Trykk nede til høgre**: neste grovkorning i same oppstillinga (til dømes ei anna rutestorleik).
+6. **Eitt trykk** gjer noko ulikt i kvar oppstilling (sjå tabellen). I nokre oppstillingar (Ekko, Bølgje, Spinn, Khronos) held ein fingeren nede og dreg.
+7. Tidsoppstillingane vil ha telefonen i ro. Lene han mot noko, eller la det digitale stativet ta skjelven (sjå under).
 
-Dette er HUD-en, frå referansebiletet:
-
-| Plass | Tyding |
-| --- | --- |
-| øvst til venstre | kode for oppstillinga, med prikkar for kva nummer ho er. Trykk: forklaring |
-| øvst til høgre | eining og tal for heile biletet |
-| nede til venstre | batteriet: eit tal 0 til 1 som fyllgrad |
-| nede til høgre | parametrane til grovkorninga, som blenda og lukkartida i ein vanleg søkjar. Trykk: neste grovkorning |
-| linjalen | målinga på sonden, eller eit anna tal som vert forklart av oppstillinga |
-| sikta | sonden, flyttar seg dit du trykker |
+Det finst ingen HUD og inga tekst. Tala kvar oppstilling reknar ut er framleis der (`window.__entropi.debug()`), og tabellen under seier kva dei måler.
 
 ## Oppstillingar
 
 Rekkjefølgja er den same som når du held to fingrar nede.
 
-| Kode | Namn | Kva ho gjer | Trykk | Tal |
+| Kode | Namn | Kva ho gjer | Trykk | Måler |
 | --- | --- | --- | --- | --- |
 | KAT | Katten | Arnolds kattekart. Eit bilete vert teke og blanda til snø av ei fast omstokking av pikslane (x += y, så y += x, på ein torus). Det er ei omstokking, så ingenting går tapt, og etter nøyaktig 96 steg (3 s) er kvar piksel tilbake. Poincaré-attkomst. | nytt bilete | Boltzmann-entropi per 8×8-rute, bit per piksel. Stig frå ca. 1 til 2,6 og fell tilbake. |
 | DEM | Demon | Ein demon sorterer pikslane etter lys, innanfor celler, medan du filmar (odd-even transposition sort på ein permutasjon som vert halden ved like). Berre histogrammet i cella er att. | startar demonen på nytt | S = log2(W)/N, W = N!/Πn_k!, bit per piksel |
@@ -46,6 +37,10 @@ Rekkjefølgja er den same som når du held to fingrar nede.
 | TID | Tid | Kor mykje nytt som kjem inn: entropien til endringa frå førre bilete under ein fast støymodell, ½·log2(1 + (d/σ)²). Etterglød viser kvar. | sonde | bit per piksel |
 | BLA | Blanding | Frys biletet og byter piksel parvis etter reversible reglar. 1-piksel-entropien held seg fast, gjensidig informasjon mellom naboar fell mot null. Nytt trykk køyrer reglane baklengs. | snur tida | bit |
 | PIL | Tidspil | Der tida ser ut til å gå éi veg: tidsasymmetrien γ = E[d³]/E[d²]^1.5 til endringane per piksel. Varmt: rask opp, sakte ned. Kaldt: omvendt. Mørkt: ingen pil. | sonde | bit (proxy) |
+| FLY | Flyt | Optisk flyt: kvar piksel får ein fartsvektor. Lucas-Kanade på ein pyramide med fem nivå (mipmap av lysstyrken, frå grovt til fint, førre bilete vridd med flyten så langt), 7×7-vindauge, 2×2-likning per piksel. Fire visingar: FARGE (retning er farge, fart er lys), BLEKK (fargeblekk som følgjer rørsla), PILER, RELATIV (kamerarørsla trekt frå). | grovkorning | retningsentropi: histogram over åtte retningar for dei som rører seg, H = −Σ p·log2 p, 0 til 3 bit. Alle same veg gir 0, rot gir 3 |
+| EKK | Ekko | Video-tilbakekopling: kvart bilete er det førre, litt zooma og vridd, lagt inn att i seg sjølv. Kameraet slepp inn anten som Droste-ramme, eller berre det som rører seg. Fire visingar: DROSTE, TUNNEL, VIRVEL, SPEIL (kaleidoskop). Ei slik løkke har ingen fast tilstand: ein liten skilnad vert forsterka for kvart rundt. | midten av løkka (trykk og hald) | kor langt løkka har vandra frå kameraet, ½·log2(1 + z²) bit per piksel |
+| BØL | Bølgje | Ei dam ut frå bølgjelikninga, rekna eksakt tidsreversibelt. Det som rører seg i biletet dyttar på vatnet. Trykk: tida går baklengs, kvar dytting vert trekt frå att i omvend rekkjefølgje, og dammen vert flat att (Loschmidt). | snur tida | Boltzmann-entropi S = log2(tal på 8×8-ruter som er i bruk) |
+| SPI | Spinn | Potts-modell (Ising med fire retningar) på kameraet. Lys er varme: mørkt fryser til flekkar som veks (domenevekst), lyst vert støy. Metropolis med sjakkbrett-oppdatering, Tc = 1/ln(1 + √q). | kvelv alt, trykk og hald gir ein varm tupp | blokkentropi over 8×8-ruter |
 
 Grovkorningar ein kan bla gjennom ved å trykke på parametrane:
 
@@ -65,6 +60,8 @@ Grovkorningar ein kan bla gjennom ved å trykke på parametrane:
 | ROM | 9×9 med 16 nivå, 5×5 med 16, 9×9 med 4, 13×13 med 16 |
 | TID | støygolv σ = 3, 6, 12 og 1.5 gråtrinn |
 | PIL | vindauge 30 bilete og 4×4 piksel, 8, 120, og 16×16 piksel |
+| FLY | FARGE, BLEKK, PILER, RELATIV |
+| EKK | DROSTE, TUNNEL, VIRVEL, SPEIL |
 
 ### Om entropi
 
@@ -96,6 +93,12 @@ Nytt:
 - **Marey**: syntetisk film med fast kamera, ei hand på ein åttetalsbane og ein sprettande ball: vifte av hender i TETT, rein kronofotografi i MAREY. Ein handhalden film (studio) gir kontur på alt, fordi heile biletet flyttar seg. Det er ein grense, ikkje ein feil: kameraet må stå i ro.
 - Hending, Vane, Tidsfarge, Khronos, Sakte lukkar, Open Shutter og Demon er sett på ekte filmar (studio, kjøken, statue, stilleliv) og sjekka mot det dei skal gjere.
 
+## Digitalt stativ
+
+Dei ti oppstillingane med `still: true` får videoen gjennom eit stativ som køyrer heilt på GPU-en, utan CPU og utan tilbakelesing. Lucas-Kanade på ein gråtone-versjon i halv arbeidsoppløysing finn éi global forskyving mot ein referanse som flyt sakte etter (glidande snitt av dei stabiliserte bileta). Ei lysstyrkeforskyving i normallikningane gjer at skiftande eksponering ikkje dreg biletet, og robuste vekter gjer at det som dominerer (ofte bakgrunnen) styrer, ikkje ei hand som rører seg. Går forskyvinga over 12 % av breidda, startar stativet på nytt.
+
+Målt på ein handhalden film (360×640, forskyving opp til 14 piksel): standardavviket i bakgrunnen går frå 4,2 til 0,7 piksel sideleis og frå 3,2 til 0,16 piksel opp og ned. Marey på same film gav dobbeltbilete av alle søyler utan stativ og skarp bakgrunn med.
+
 ## Teknikk
 
 - SvelteKit 3 (Svelte 5, Vite 8), `adapter-vercel`. Ei einaste side, ferdigbygd, ingen server.
@@ -105,17 +108,17 @@ Nytt:
 - Fonten er Michroma (OFL).
 
 ```
-src/lib/engine/     gl.ts (WebGL2-hjelparar), camera.ts, engine.ts (lykkja), types.ts
+src/lib/engine/     gl.ts (WebGL2-hjelparar), camera.ts, engine.ts (lykkja), stabilize.ts (digitalt stativ), types.ts
 src/lib/setups/     ei fil per oppstilling, index.ts er rekkjefølgja
-src/lib/hud/        Hud.svelte (sikte, hjørne, linjal, batteri)
-src/lib/gesture.ts  trykk, trykk og hald, to- og tre-finger-hald
+src/lib/hud/        Picker.svelte (veljaren, den einaste teksta i appen)
+src/lib/gesture.ts  trykk, langt trykk, trykk og hald, to- og tre-finger-hald
 src/lib/haptics.ts  tikk på iOS (best effort)
 scripts/make_icons.py   ikon og oppstartsbilete
 ```
 
 ### Ny oppstilling
 
-Implementer `Setup` (`init`, `frame`, `draw`, `meters`, valfritt `tap`, `touch` og `cycle`) i `src/lib/setups/`, og legg ho til i `src/lib/setups/index.ts`. Eit oppsett får `ctx` med kamerabiletet (`ctx.cur`, `ctx.prev`, luma i alfakanalen), sonden og `ctx.read()` for asynkron lesing. `MapMeter` gir snitt og punktmåling frå eit kart med mipmap, med opptil tre kanalar. `info.how` er éi linje om kva ein gjer: ho vert vist første gongen oppsettet vert opna, og når ein trykker på koden. `info.press` ber om trykk og hald (`touch`). `cycle` vert kalla når ein trykker på parametrane og returnerer ei kort lapp om den nye grovkorninga.
+Implementer `Setup` (`init`, `frame`, `draw`, `meters`, valfritt `tap`, `touch` og `cycle`) i `src/lib/setups/`, og legg ho til i `src/lib/setups/index.ts`. Eit oppsett får `ctx` med kamerabiletet (`ctx.cur`, `ctx.prev`, luma i alfakanalen), sonden og `ctx.read()` for asynkron lesing. `MapMeter` gir snitt og punktmåling frå eit kart med mipmap, med opptil tre kanalar. `info.group` (`rom`, `tid` eller `dyn`) set oppsettet i veljaren. `info.how` og `info.blurb` er dokumentasjon, dei vert ikkje viste. `info.press` ber om trykk og hald (`touch`). `info.still` seier at oppsettet reknar med eit kamera i ro, og då får det videoen gjennom det digitale stativet. `cycle` vert kalla når ein trykker nede til høgre. `Reducer` gir globale snitt av opptil 16 kanalar i éi lesing.
 
 ### Utvikling
 
@@ -139,14 +142,14 @@ Tunge oppstillingar (modellar som treng 24 GB) kan ikkje køyre på telefonen. P
 3. Tenaren svarar med eit lite JSON-målepakke (`gauge`, `ruler`, `value`, `params`) og eit overlegg (WebP med alfa) for same id.
 4. Oppstillinga teiknar kameraet lokalt i full fart og legg det siste overlegget oppå, så forsinkinga syner som etterslep i kartet og ikkje i søkjaren.
 
-Same `Setup`-grensesnitt, så HUD, gestar og bytte er uendra.
+Same `Setup`-grensesnitt, så gestar og bytte er uendra.
 
 ## Kjende grenser
 
 - Testa i desktop-Chromium med falskt kamera og programvare-WebGL. Ikkje enno på ein ekte iPhone.
 - Haptikk på iOS er best effort (`<input switch>`-trikset) og kan stilltiegande utebli.
 - iOS kan spørje om kameraløyve på nytt for kvar oppstart av heimskjerm-appen.
-- Marey, Open Shutter, Vane, Tidsfarge og Puls reknar med eit kamera i ro. Handhalde ser dei heile biletet som rørsle.
+- Marey, Open Shutter, Vane, Tidsfarge, Puls, Hending, Tid, Tidspil, Bølgje og Ekko reknar med eit kamera i ro. Det digitale stativet tek bort små rørsler (opp til ca. 12 % av breidda), men ikkje ei ekte panorering.
 - Puls er berre prøvd på ein syntetisk film. Ekte hud gir svakare signal, kameraet sin eigen automatiske eksponering driv, og komprimering kan ete det.
 - Tid og Tidspil reknar ut frå endring mellom bilete: handhalde kamera og kameraet sin eigen støyfjerning påverkar talet.
 - Tidspil er ein irreversibilitets-test av tredje moment, ikkje entropiproduksjon.

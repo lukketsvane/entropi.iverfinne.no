@@ -69,6 +69,7 @@ export class Blanding implements Setup {
 	readonly info: SetupInfo = {
 		id: 'blanding',
 		code: 'BLA',
+		group: 'dyn',
 		name: 'Blanding',
 		blurb: 'Same piksel, tapt rekkjefølgje. Trykk: snu tida.',
 		how: 'Trykk på biletet: pikslane byter plass etter faste reglar. Trykk att: tida går baklengs og biletet kjem tilbake.',

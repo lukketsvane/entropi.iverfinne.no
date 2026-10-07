@@ -1,8 +1,9 @@
 import { Gfx, Reader, type Prog, type Target } from './gl';
+import { Stabilizer } from './stabilize';
 import type { Ctx, Factory, Meters, Setup, SetupInfo } from './types';
 
 export interface EngineEvents {
-	onMeters(m: Meters): void;
+	onMeters?(m: Meters): void;
 	onSetup(info: SetupInfo, index: number, count: number): void;
 	onStall?(): void;
 	onFatal?(e: Error): void;
@@ -27,6 +28,13 @@ export class Engine {
 	private reader!: Reader;
 	private blit!: Prog;
 	private videoTex!: WebGLTexture;
+	/** teksturen oppsetta ser: rå video, eller videoen etter det digitale stativet */
+	private viewTex!: WebGLTexture;
+	private stab: Stabilizer | null = null;
+	private stabBad = false;
+	private stabOn = false;
+	/** Til testar: 'auto' fylgjer oppsettet (info.still), 'on' og 'off' tvingar. */
+	stabMode: 'auto' | 'on' | 'off' = 'auto';
 	private vw = 0;
 	private vh = 0;
 	private a!: Target;
@@ -74,6 +82,9 @@ export class Engine {
 		this.reader = new Reader(g.gl);
 		this.blit = g.prog('blit', BLIT);
 		this.videoTex = g.texture(2, 2, g.U8, true);
+		this.viewTex = this.videoTex;
+		this.stab = null;
+		this.stabBad = false;
 		this.vw = this.vh = 0;
 		this.ok = this.infos.map((i) => !i.needsFloat || g.hasF16);
 	}
@@ -86,6 +97,14 @@ export class Engine {
 	}
 	get info(): SetupInfo {
 		return this.infos[this.idx];
+	}
+	/** Alle oppsetta i rekkjefølgje, til veljaren. */
+	get list(): readonly SetupInfo[] {
+		return this.infos;
+	}
+	/** false viss oppsettet ikkje kan køyre på denne eininga (til dømes utan flyttalsmål). */
+	available(i: number): boolean {
+		return !!this.ok[i];
 	}
 	get webgl() {
 		return {
@@ -127,6 +146,7 @@ export class Engine {
 	private startSetup() {
 		this.setup?.dispose();
 		this.setup = null;
+		this.stab?.reset();
 		if (!this.a) return;
 		let s: Setup | null = null;
 		for (let k = 0; k < this.count && !s; k++) {
@@ -148,7 +168,7 @@ export class Engine {
 		}
 		this.setup = s;
 		this.ev.onSetup(s.info, this.idx, this.count);
-		this.ev.onMeters(s.meters());
+		this.ev.onMeters?.(s.meters());
 	}
 
 	go(i: number): void {
@@ -293,7 +313,7 @@ export class Engine {
 	private ctx(): Ctx {
 		return {
 			gfx: this.gfx,
-			video: this.videoTex,
+			video: this.viewTex,
 			cover: this.cover(),
 			w: this.ww,
 			h: this.wh,
@@ -313,6 +333,11 @@ export class Engine {
 		const va = this.vw / this.vh;
 		const sa = this.sw / this.sh;
 		return va > sa ? [sa / va, 1] : [1, va / sa];
+	}
+
+	private wantStab(): boolean {
+		if (this.stabMode === 'off' || this.stabBad || !this.gfx.hasF16) return false;
+		return this.stabMode === 'on' || !!this.setup?.info.still;
 	}
 
 	private process(_now: number) {
@@ -345,10 +370,24 @@ export class Engine {
 
 		const cover = this.cover();
 
+		// 1b. digitalt stativ, berre for oppsett som går ut frå eit kamera i ro
+		this.viewTex = this.videoTex;
+		this.stabOn = false;
+		if (this.wantStab()) {
+			try {
+				this.stab ??= new Stabilizer(g);
+				this.viewTex = this.stab.run(this.videoTex, this.vw, this.vh, cover, this.ww, this.wh);
+				this.stabOn = true;
+			} catch (e) {
+				console.warn('stativ feila, held fram utan', e);
+				this.stabBad = true;
+			}
+		}
+
 		// 2. arbeidsbilete: dekk skjermen, luma i alfa
 		g.to(this.a);
 		g.use(this.blit);
-		g.sampler(this.blit, 'uVideo', 0, this.videoTex);
+		g.sampler(this.blit, 'uVideo', 0, this.viewTex);
 		gl.uniform2f(this.blit.u('uCover'), cover[0], cover[1]);
 		g.quad();
 
@@ -375,7 +414,7 @@ export class Engine {
 		this.frameNo++;
 
 		// 5. målarar til HUD-en, ~8 Hz
-		if (t - this.lastMeters > 120) {
+		if (this.ev.onMeters && t - this.lastMeters > 120) {
 			this.lastMeters = t;
 			this.ev.onMeters(this.setup.meters());
 		}
@@ -412,8 +451,19 @@ export class Engine {
 	dispose() {
 		this.stop();
 		this.setup?.dispose();
+		this.stab?.dispose();
 		this.canvas.removeEventListener('webglcontextlost', this.onLost as EventListener);
 		this.canvas.removeEventListener('webglcontextrestored', this.onRestored as EventListener);
+	}
+
+	/** Til testar: eit oppsett sine eigne feilsøkingstal. */
+	debugSetup(arg?: unknown): unknown {
+		return this.setup?.debug?.(this.ctx(), arg);
+	}
+
+	/** Målt forskyving i det digitale stativet (piksel i halv arbeidsoppløysing). Stoppar GPU-en, berre til testar. */
+	stabShift(): [number, number] | null {
+		return this.stab ? this.stab.debug() : null;
 	}
 
 	/** Til feilsøking og testar. */
@@ -423,6 +473,7 @@ export class Engine {
 			index: this.idx,
 			fps: Math.round(this.fps * 10) / 10,
 			frames: this.frameNo,
+			stab: this.stabOn,
 			meters: this.setup?.meters() ?? null,
 			webgl: this.webgl
 		};

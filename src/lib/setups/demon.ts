@@ -155,6 +155,7 @@ export class Demon implements Setup {
 	readonly info: SetupInfo = {
 		id: 'demon',
 		code: 'DEM',
+		group: 'dyn',
 		name: 'Demon',
 		blurb: 'Ein demon sorterer pikslane etter lys. Same piksel, ingen rekkjefølgje.',
 		how: 'Trykk: demonen byrjar på nytt. Trykk på talet nede til høgre: anna celle.',

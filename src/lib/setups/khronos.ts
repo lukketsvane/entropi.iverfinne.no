@@ -89,6 +89,7 @@ export class Khronos implements Setup {
 	readonly info: SetupInfo = {
 		id: 'khronos',
 		code: 'TIM',
+		group: 'tid',
 		name: 'Khronos',
 		blurb: 'Kameraet hugsar to sekund. Trykk og hald: tida går bakover under fingeren.',
 		how: 'Hald fingeren nede og dra rundt. Slepp: tida kjem tilbake.',

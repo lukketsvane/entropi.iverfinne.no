@@ -136,6 +136,76 @@ void main() {
 	}
 }
 
+/**
+ * Globale snitt av opptil 16 kanalar frå opptil fire mipmappa kart (RGBA, 0..1) i éi lesing.
+ * Kanal i ligg i kart i>>2, komponent i&3. Snittet er eksakt over nivå 3 (8x8 per texel) når
+ * kartet er delbart med 8. Resultatet kjem 1 til 3 bilete seinare i v[i] (0..1, 16 bit).
+ * Éi lesing om gongen i heile motoren: bruk éin Reducer eller éin MapMeter per oppsett.
+ */
+export class Reducer {
+	private stat: Target;
+	private prog: Prog;
+	/** siste lesne snitt */
+	v: number[];
+	/** kor mange lesingar som har kome attende */
+	count = 0;
+
+	constructor(
+		private gfx: Gfx,
+		readonly nch: number
+	) {
+		if (nch < 1 || nch > 16) throw new Error('Reducer: 1..16 kanalar');
+		this.stat = gfx.target(nch, 1, gfx.U8, false);
+		this.v = new Array<number>(nch).fill(0);
+		const loop = (m: number) => `
+	if (m == ${m}) {
+		ivec2 s = textureSize(uM${m}, 3);
+		for (int y = 0; y < s.y; y++) {
+			for (int x = 0; x < s.x; x++) acc += pick(texelFetch(uM${m}, ivec2(x, y), 3), ch);
+		}
+		n = float(s.x * s.y);
+	}`;
+		this.prog = gfx.prog(
+			'reducer',
+			`${PACK}
+uniform sampler2D uM0;
+uniform sampler2D uM1;
+uniform sampler2D uM2;
+uniform sampler2D uM3;
+float pick(vec4 c, int k) { return k == 0 ? c.r : k == 1 ? c.g : k == 2 ? c.b : c.a; }
+void main() {
+	int i = int(gl_FragCoord.x);
+	int m = i >> 2;
+	int ch = i & 3;
+	float acc = 0.0;
+	float n = 1.0;${loop(0)}${loop(1)}${loop(2)}${loop(3)}
+	o = vec4(pack16(acc / n), 0.0, 0.0);
+}`
+		);
+	}
+
+	/** maps: éin Target per fire kanalar, laga med mips (F16). Manglar eit kart, vert sampleren bunden til det første. */
+	run(ctx: Ctx, maps: Target[]) {
+		const g = this.gfx;
+		const gl = g.gl;
+		const k = Math.ceil(this.nch / 4);
+		for (let i = 0; i < k; i++) g.mipmap(maps[i]);
+		g.to(this.stat);
+		g.use(this.prog);
+		for (let i = 0; i < 4; i++) g.sampler(this.prog, `uM${i}`, i, maps[Math.min(i, k - 1)].tex);
+		void gl;
+		g.quad();
+		ctx.read(this.stat, 0, 0, this.nch, 1, (b) => {
+			for (let i = 0; i < this.nch; i++) this.v[i] = unpack16(b, i * 4);
+			this.count++;
+		});
+	}
+
+	dispose() {
+		this.stat.del();
+	}
+}
+
 /** Mjuk tal-glatting for HUD-en, så ikkje siffera hoppar. */
 export class Ease {
 	v = 0;

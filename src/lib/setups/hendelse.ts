@@ -64,11 +64,13 @@ export class Hendelse implements Setup {
 	readonly info: SetupInfo = {
 		id: 'hending',
 		code: 'HEN',
+		group: 'tid',
 		name: 'Hending',
 		blurb: 'Eit kamera som berre ser endring. Kvar piksel tiger til lyset endrar seg.',
 		how: 'Hald stille: det tiger. Veiv handa: meldingane kjem. Talet er kva dei kostar i bit.',
 		needsFloat: true,
-		probe: true
+		probe: true,
+		still: true
 	};
 
 	private uP!: Prog;

@@ -97,11 +97,13 @@ export class Tidsfarge implements Setup {
 	readonly info: SetupInfo = {
 		id: 'tidsfarge',
 		code: 'FRG',
+		group: 'tid',
 		name: 'Tidsfarge',
 		blurb: 'Fargen er tida. Kvitt er nett no, blått er for lenge sidan.',
 		how: 'Sveip handa over biletet. Sporet er tida som gjekk.',
 		needsFloat: true,
-		probe: true
+		probe: true,
+		still: true
 	};
 
 	private uP!: Prog;

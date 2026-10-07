@@ -191,11 +191,13 @@ export class Marey implements Setup {
 	readonly info: SetupInfo = {
 		id: 'marey',
 		code: 'MAR',
+		group: 'tid',
 		name: 'Marey',
 		blurb: 'Eit stroboskop. Alt som rører seg vert stempla fast som stillbilete.',
 		how: 'Lene telefonen mot noko og rør deg framfor han. Trykk for å nullstille rommet. Trykk på talet nede til høgre for anna rytme.',
 		needsFloat: true,
-		probe: false
+		probe: false,
+		still: true
 	};
 
 	private mP!: Prog;

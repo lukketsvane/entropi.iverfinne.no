@@ -76,6 +76,7 @@ export class Skan implements Setup {
 	readonly info: SetupInfo = {
 		id: 'skan',
 		code: 'SKA',
+		group: 'tid',
 		name: 'Sakte lukkar',
 		blurb: 'Lukkaren er ei line som sveipar over biletet. Kvar rad er frå sitt eige augneblink.',
 		how: 'Rør deg mot og med linja og sjå forskjellen. Trykk på talet nede til høgre for å bytte lukkar.',
