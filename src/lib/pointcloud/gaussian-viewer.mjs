@@ -3,7 +3,7 @@ import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {HeadParallax} from './head-parallax.mjs';
 import {attachViewerGestures, noAdjust} from './viewer-gestures.ts';
 
-/** @typedef {{position:number[],target:number[],up:number[],fov:number,aspect?:number}} SceneCamera */
+/** @typedef {{position:number[],target:number[],up:number[],fov:number,aspect?:number,bounds?:{center:number[],radius:number}}} SceneCamera */
 
 /** Render covariance, orientation, opacity and colour, rather than converting Gaussians to dots.
  * @param {HTMLElement} host @param {Uint8Array} bytes @param {SceneCamera} initial
@@ -66,16 +66,34 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
     controls.target.copy(flip(initial.target));
     const sourceFov = THREE.MathUtils.clamp(initial.fov, 25, 110);
     const distance = Math.max(.01, camera.position.distanceTo(controls.target));
-    camera.near = distance / 1000; camera.far = distance * 1000;
-    controls.minDistance = distance * .15; controls.maxDistance = distance * 5;
+    const sceneCenter = initial.bounds?.center;
+    const sceneBoundsRadius = initial.bounds?.radius;
+    const bounds = Array.isArray(sceneCenter) && sceneCenter.length === 3 && sceneCenter.every(Number.isFinite) &&
+      typeof sceneBoundsRadius === 'number' && Number.isFinite(sceneBoundsRadius) && sceneBoundsRadius >= 0
+      ? {center: flip(sceneCenter), radius: sceneBoundsRadius} : null;
+    camera.near = distance / 1000;
+    controls.minDistance = distance * .15;
     controls.update();
     host.replaceChildren(renderer.domElement);
+    const updateZoomLimit = () => {
+      const halfVertical = THREE.MathUtils.degToRad(camera.fov / 2);
+      const halfAngle = Math.min(halfVertical, Math.atan(Math.tan(halfVertical) * camera.aspect));
+      const offset = bounds?.center.clone().sub(controls.target);
+      const direction = camera.position.clone().sub(controls.target).normalize();
+      const along = offset?.dot(direction) ?? 0;
+      const across = offset ? Math.sqrt(Math.max(0, offset.lengthSq() - along * along)) : 0;
+      const fitDistance = bounds ? along + bounds.radius / Math.sin(halfAngle) + across / Math.tan(halfAngle) : 0;
+      controls.maxDistance = Math.max(distance * 20, fitDistance * 1.25);
+      camera.far = Math.max(distance * 1000, controls.maxDistance + (offset?.length() ?? 0) + (bounds?.radius ?? 0));
+      camera.updateProjectionMatrix();
+    };
     const resize = () => {
       const width = Math.max(1, host.clientWidth), height = Math.max(1, host.clientHeight);
       renderer.setSize(width, height, false); camera.aspect = width / height;
       camera.fov = Math.min(120, THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(sourceFov / 2)) * Math.max(1, (initial.aspect || camera.aspect) / camera.aspect))));
-      camera.updateProjectionMatrix();
+      updateZoomLimit();
     };
+    controls.addEventListener('change', updateZoomLimit);
     observer = new ResizeObserver(resize); observer.observe(host); resize();
     await spark.update({scene, camera}); renderer.render(scene, camera);
     signal.throwIfAborted();

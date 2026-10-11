@@ -68,10 +68,10 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
                 path = (folder / "output" / metadata["ply"]).resolve()
                 if not path.is_relative_to(folder / "output"):
                     raise ValueError("Invalid model artifact")
-                count = await asyncio.to_thread(pack_ply, path, folder / "scene.splat")
+                count, bounds = await asyncio.to_thread(pack_ply, path, folder / "scene.splat")
                 artifact = folder / "scene.splat"
                 digest = await asyncio.to_thread(lambda: hashlib.sha256(artifact.read_bytes()).hexdigest())
-                job.update(status="succeeded", progress=100, model=metadata["model"], camera=metadata["camera"],
+                job.update(status="succeeded", progress=100, model=metadata["model"], camera={**metadata["camera"], "bounds": bounds},
                     representation="gaussian-splats", sizeBytes=artifact.stat().st_size, sha256=digest, splats=count)
             except asyncio.CancelledError:
                 raise
