@@ -1,0 +1,15 @@
+Entropi photo-to-point-cloud uses Depth Anything V2 Small (Apache License 2.0)
+from onnx-community/depth-anything-v2-small, revision
+64fe43eba7f8a384b02fe3fadaa26cbba35548d8. The pinned quantized model is fetched
+from Hugging Face and verified against the SHA-256 in models/manifest.json.
+Model license: models/LICENSE.txt.
+
+ONNX Runtime Web 1.30.0 is MIT licensed. The JavaScript modules are vendored;
+the matching WASM binary is fetched from the pinned jsDelivr npm distribution
+and verified against models/manifest.json. License: vendor/ONNXRUNTIME-LICENSE.txt.
+
+Three.js 0.186.1 and OrbitControls are MIT licensed and bundled from the npm
+dependency. Its license is included in node_modules/three/LICENSE at build time.
+
+Depth is estimated, relative, and represents visible surfaces. It is not a metric
+scan or a complete reconstruction of unseen surfaces. Camera photos stay local.
