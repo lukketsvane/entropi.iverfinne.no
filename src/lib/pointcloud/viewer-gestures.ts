@@ -1,9 +1,9 @@
 type Point = {x: number; y: number; x0: number; y0: number};
 type Measure = {x: number; y: number; gap: number};
-type Options = {onDensity(value: number): void; onPinch(scale: number): void; onAdjust?(message: string): void};
+type Options = {onDensity(value: number): void; onPinch(scale: number): void; onAdjust?(message: string, density: number): void};
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
-export const noAdjust = (_message: string) => {};
+export const noAdjust = (_message: string, _density: number) => {};
 
 export function progressiveIndices(count: number) {
   const indices = Array.from({length: count}, (_, index) => index);
@@ -89,7 +89,7 @@ export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPi
     if (!pointers.delete(event.pointerId)) return;
     if (pointers.size >= 2 && pointers.size <= 3) reset();
     else if (pointers.size === 0) {
-      if (changed) onAdjust(`Visingsoppløysing ${Math.round(state.density * 100)} prosent. Lysstyrke ${Math.round(state.brightness * 100)} prosent. Kontrast ${Math.round(state.contrast * 100)} prosent.`);
+      if (changed) onAdjust(`Visingsoppløysing ${Math.round(state.density * 100)} prosent. Lysstyrke ${Math.round(state.brightness * 100)} prosent. Kontrast ${Math.round(state.contrast * 100)} prosent.`, state.density);
       active = false; mode = ''; start = previous = null; changed = false;
     }
   };

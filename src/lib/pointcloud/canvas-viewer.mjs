@@ -6,7 +6,7 @@ export class CanvasPointCloudViewer {
   /** @param {HTMLElement} host @param {PointCloud} cloud */
   constructor(host,cloud,onAdjust = noAdjust) {
     this.host=host;this.cloud=cloud;this.canvas=document.createElement('canvas');
-    const context=this.canvas.getContext('2d',{alpha:false});
+    const context=this.canvas.getContext('2d',{alpha:true});
     if(!context)throw new Error('Kunne ikkje vise punktskyen.');
     this.context=context;host.replaceChildren(this.canvas);this.canvas.style.touchAction='none';
     this.disposed=false;this.dirty=true;this.auto=true;this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.pointSize=1;
@@ -65,7 +65,7 @@ export class CanvasPointCloudViewer {
     const cy=Math.cos(this.yaw),sy=Math.sin(this.yaw),cp=Math.cos(this.pitch),sp=Math.sin(this.pitch);
     const radius=Math.max(.01,this.cloud.radius),distance=radius*2.8/this.zoom,focal=Math.min(width,height)*1.08;
     const eye=this.parallax.offsets(distance,width/height,time,this.reducedMotion);
-    ctx.fillStyle='#000';ctx.fillRect(0,0,width,height);
+    ctx.clearRect(0,0,width,height);
     for(let i=0;i<this.order.length;i++) {
       const at=this.indices[i]*3,x=positions[at],y=positions[at+1],z=positions[at+2];
       const rx=x*cy+z*sy,rz=-x*sy+z*cy,ry=y*cp-rz*sp,depth=distance+eye.z-(y*sp+rz*cp);
@@ -101,7 +101,7 @@ export class CanvasPointCloudViewer {
     canvas.height=Math.max(1,Math.min(1024,Math.round(384*this.canvas.height/this.canvas.width)));
     const context=canvas.getContext('2d');if(!context)throw new Error('Kunne ikkje lese punktskyen.');
     const style=this.style;
-    try{this.style='mono';this.render();context.filter=this.gestures.state.filter;context.drawImage(this.canvas,0,0,canvas.width,canvas.height);}
+    try{this.style='mono';this.render();context.fillStyle='#000';context.fillRect(0,0,canvas.width,canvas.height);context.filter=this.gestures.state.filter;context.drawImage(this.canvas,0,0,canvas.width,canvas.height);}
     finally{this.style=style;this.render();this.dirty=true;}
     return canvas;
   }

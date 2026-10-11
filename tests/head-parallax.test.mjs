@@ -54,7 +54,7 @@ test('head perspective follows a newly orbited camera and reduced motion dampens
 test('the actual Canvas fallback projects head motion with depth while keeping its screen plane fixed',()=>{
   const viewer=Object.create(CanvasPointCloudViewer.prototype);
   Object.assign(viewer,{
-    canvas:{width:390,height:844},context:{fillStyle:'',fillRect(){}},
+    canvas:{width:390,height:844},context:{fillStyle:'',clearRect(){},fillRect(){}},
     cloud:{positions:Float32Array.from([0,0,1.12, 0,0,.56, 0,0,0]),colors:new Uint8Array(9).fill(200),radius:1},
     indices:[0,1,2],projected:new Float32Array(9),order:[0,1,2],
     yaw:0,pitch:0,zoom:1,panX:0,panY:0,pointSize:1,style:'crt',

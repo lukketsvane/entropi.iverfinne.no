@@ -33,12 +33,16 @@
 	let manualPrint = 0;
 	let reconstruction: AbortController | null = null;
 	let capturedFrames: Pixels[] = [];
+	let reconstructionDensity = .7;
+	let pendingTaps: Pixels[] = [];
+	let tapTimer: ReturnType<typeof setTimeout> | undefined;
 	let fallbackFrames: Pixels[] | null = null;
 	let suppressCaptureClick = false;
 	let printerAnnouncement = $state('');
 	let trackingFailed = false;
 	const estimator = new DepthEstimator();
 	let mode = $state<'camera' | 'recording' | 'working' | 'done' | 'error'>('camera');
+	let viewerReady = $state(false);
 	let announcement = $state('Trykk for eitt bilete. Hald inne medan du panorerer, og slepp for å lage ei punktsky.');
 	let progress = $state<number | null>(null);
 	let plyUrl = $state('');
@@ -62,6 +66,7 @@
 	}
 	function clearResult() {
 		stopTracking();
+		viewerReady = false;
 		viewer?.dispose(); viewer = null;
 		if (plyUrl) URL.revokeObjectURL(plyUrl);
 		plyUrl = '';
@@ -126,11 +131,39 @@
 		context.drawImage(source, 0, 0, canvas.width, canvas.height);
 		return captureSnapshot(context.getImageData(0, 0, canvas.width, canvas.height));
 	}
+	function clearTapBatch() {
+		clearTimeout(tapTimer); tapTimer = undefined; pendingTaps = [];
+	}
+	function scheduleTapBatch() {
+		clearTimeout(tapTimer);
+		tapTimer = setTimeout(() => {
+			tapTimer = undefined;
+			if (recorder.active) return;
+			const frames = pendingTaps; pendingTaps = [];
+			if (frames.length && !disposed && mode === 'camera') void finishCapture(frames);
+		}, 400);
+	}
+	function addTap(frame: Pixels) {
+		pendingTaps.push(frame);
+		scheduleTapBatch();
+	}
 	const recorder = new FrameRecorder({
 		capture: () => video?.readyState >= 2 && video.videoWidth ? pixelsFor(video, video.videoWidth, video.videoHeight) : null,
 		onHold: () => { mode = 'recording'; announcement = 'Samlar bilete. Panorer langsamt med overlapp, og slepp når du er ferdig.'; },
-		finish: frames => { capturePointer = null; void finishCapture(frames); },
-		cancel: () => { capturePointer = null; if (mode === 'recording') mode = 'camera'; }
+		finish: frames => {
+			capturePointer = null;
+			if (mode === 'recording' || frames.length > 1) {
+				const combined = [...pendingTaps, ...frames]; clearTapBatch();
+				void finishCapture(combined);
+			} else if (frames[0]) addTap(frames[0]);
+			else if (pendingTaps.length) scheduleTapBatch();
+			else openCapture();
+		},
+		cancel: () => {
+			capturePointer = null;
+			if (mode === 'recording') mode = 'camera';
+			if (pendingTaps.length) scheduleTapBatch();
+		}
 	});
 	function beginCapture(event: PointerEvent) {
 		if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0) || mode !== 'camera') return;
@@ -157,7 +190,7 @@
 		if (choosePrinter() || shake?.requestFromGesture()) return;
 		if (!video || video.readyState < 2 || !video.videoWidth) { openCapture(); return; }
 		// Mouse/touch already finish on release; keyboard and assistive clicks still capture.
-		if (event.detail === 0) void finishCapture([pixelsFor(video, video.videoWidth, video.videoHeight)]);
+		if (event.detail === 0) addTap(pixelsFor(video, video.videoWidth, video.videoHeight));
 	}
 	function stitch(frames: Pixels[]): Promise<Capture> {
 		if (frames.length === 1) return Promise.resolve({ ...captureSnapshot(frames[0]), inputFrames: 1, registeredFrames: 1 });
@@ -185,6 +218,7 @@
 	}
 	async function finishCapture(frames: Pixels[], id = ++generation) {
 		if (disposed || id !== generation) return;
+		clearTapBatch();
 		if (!frames.length) { mode = 'camera'; openCapture(); return; }
 		try {
 			reconstruction?.abort(); clearResult(); captured = null; progress = null; mode = 'working';
@@ -212,16 +246,17 @@
 			try {
 				const scene = await reconstructGaussian(capturedFrames, update => {
 					if (!disposed && id === generation) { progress = update.percent ?? null; announcement = 'Lagar Gaussian-scene på modelltenaren.'; }
-				}, task.signal);
+				}, task.signal, reconstructionDensity);
 				if (disposed || id !== generation) return;
 				estimator.dispose(); fallbackFrames = null;
 				mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
 				await tick();
 				if (disposed || id !== generation || !cloudHost) return;
 				const next = await createGaussianViewer(cloudHost, scene.bytes, scene.camera, error => fail(error, id), task.signal,
-					status => { if (!disposed && id === generation) announcement = status; });
+					(status, density) => { if (!disposed && id === generation) { announcement = status; reconstructionDensity = density; } });
 				if (disposed || id !== generation) { next.dispose(); return; }
 				viewer = next;
+				viewerReady = true;
 				downloadName = 'entropi-gaussian.splat';
 				plyUrl = URL.createObjectURL(new Blob([new Uint8Array(scene.bytes)], {type: 'application/octet-stream'}));
 				announcement = `Gaussian-scene klar frå ${scene.frames} bilete, med ${scene.model}. Hald inne for utskrift. Rist for å tømme lerretet.`;
@@ -255,8 +290,9 @@
 			await tick();
 			if (disposed || id !== generation || !cloudHost) return;
 			const localViewer = createPointCloudViewer(cloudHost, cloud, error => fail(error, id),
-				status => { if (!disposed && id === generation) announcement = status; });
+				(status, density) => { if (!disposed && id === generation) { announcement = status; reconstructionDensity = density; } });
 			localViewer.setStyle('color'); viewer = localViewer;
+			viewerReady = true;
 			// Preserve the original captured RGB in the local fallback and its PLY.
 			plyUrl = URL.createObjectURL(new Blob([pointCloudPLY(cloud)], { type: 'application/octet-stream' }));
 			downloadName = 'entropi-punktsky.ply';
@@ -295,6 +331,7 @@
 	}
 	async function captureFiles(files: File[]) {
 		if (!files.length || mode !== 'camera') return;
+		clearTapBatch();
 		const id = ++generation; mode = 'working'; stopCamera();
 		try {
 			const frames: Pixels[] = [];
@@ -321,6 +358,7 @@
 	}
 	async function retake() {
 		generation++; reconstruction?.abort(); reconstruction = null;
+		clearTapBatch();
 		recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera(); captured = null;
 		capturedFrames = []; fallbackFrames = null;
 		captureJobId = '';
@@ -360,7 +398,7 @@
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
-		shake = new ShakeToClear({ target: window, hasDraft: () => recorder.active || mode !== 'camera', clear: clearCanvas });
+		shake = new ShakeToClear({ target: window, hasDraft: () => recorder.active || pendingTaps.length > 0 || mode !== 'camera', clear: clearCanvas });
 		shake.start();
 		printer = new PX10Printer();
 		const printStatus = (event: Event) => {
@@ -379,7 +417,7 @@
 		try { preview = new Viewfinder(finder); } catch { announcement = 'Kamerasøkjaren kunne ikkje startast. Trykk for å velje eit bilete.'; }
 		void startCamera();
 		const suspend = () => {
-			clearTimeout(resumeTimer); recorder.abort(); stopTracking(); stopCamera();
+			clearTimeout(resumeTimer); clearTapBatch(); recorder.abort(); stopTracking(); stopCamera();
 			shake?.suspend();
 			printer?.suspend();
 			if (mode === 'camera') preview?.clear();
@@ -401,7 +439,7 @@
 		window.addEventListener('focus', resume); document.addEventListener('visibilitychange', resume);
 		window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', resume);
 		return () => {
-			disposed = true; generation++; reconstruction?.abort(); capturedFrames = []; fallbackFrames = null; clearTimeout(resumeTimer); recorder.abort();
+			disposed = true; generation++; reconstruction?.abort(); capturedFrames = []; fallbackFrames = null; clearTimeout(resumeTimer); clearTapBatch(); recorder.abort();
 			shake?.dispose(); shake = null;
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
@@ -423,7 +461,7 @@
 <svelte:window onkeydown={keys} onpaste={pasteCapture} />
 <main class="studio" class:recording={mode === 'recording'} class:working={mode === 'working'} class:result={mode === 'done'}>
 	<video bind:this={video} autoplay muted playsinline aria-hidden="true" tabindex="-1"></video>
-	<div class="finder" class:hidden={mode === 'done'} aria-hidden="true">
+	<div class="finder" class:hidden={mode === 'done' && viewerReady} aria-hidden="true">
 		<canvas bind:this={finder}></canvas>
 		<i class="cross"></i>
 		{#if mode === 'recording'}<i class="record-light"></i>{/if}
@@ -442,7 +480,7 @@
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
 	<!-- Native keyboard/screen-reader alternatives stay invisible until focus. -->
-	<div class="cloud" class:hidden={mode !== 'done'} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} onpointercancel={() => { cloudPointer = null; }} oncontextmenu={event => event.preventDefault()} role="img" aria-label="3D-scene. Hald inne utan å flytte fingeren for utskrift. Flytt hovudet for å sjå djupna. Dra for å rotere og knip med to fingrar for å zoome. Dra opp eller ned med to fingrar for visingsoppløysing. Dra med tre fingrar loddrett for lysstyrke og vassrett for kontrast. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
+	<div class="cloud" class:hidden={mode !== 'done' || !viewerReady} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} onpointercancel={() => { cloudPointer = null; }} oncontextmenu={event => event.preventDefault()} role="img" aria-label="3D-scene. Hald inne utan å flytte fingeren for utskrift. Flytt hovudet for å sjå djupna. Dra for å rotere og knip med to fingrar for å zoome. Dra opp eller ned med to fingrar for visingsoppløysing. Dra med tre fingrar loddrett for lysstyrke og vassrett for kontrast. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
 		{#if plyUrl}<a class="access-control download" href={plyUrl} download={downloadName} aria-label="Last ned 3D-scena"><i class="download-mark" aria-hidden="true"></i></a>{/if}

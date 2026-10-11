@@ -2,7 +2,7 @@
 
 The Entropi homepage calls `/api/reconstruct/health`, submits independent camera views, polls a job, and downloads the real Gaussian artifact in authenticated 2 MB ranges. Vercel forwards to the existing `GAUSS_BACKEND_URL` and keeps `GAUSS_BACKEND_TOKEN` on the server. The phone never receives that token.
 
-One photo uses **Apple SHARP**, which predicts position, scale, rotation, opacity and colour. A held pan uses **Depth Anything 3 Nested Giant Large 1.1** with `infer_gs=True`, estimated camera poses and the official Gaussian PLY writer. The large 1.1 Gaussian head replaces the local Small depth model when this service is available. Eight distinct views are retained from each capture; they are not flattened into a panorama before reconstruction.
+One photo uses **Apple SHARP**, which predicts position, scale, rotation, opacity and colour. A held pan uses **Depth Anything 3 Nested Giant Large 1.1** with `infer_gs=True`, estimated camera poses and the official Gaussian PLY writer. The large 1.1 Gaussian head replaces the local Small depth model when this service is available. Up to six distinct views are retained from each capture; they are not flattened into a panorama before reconstruction.
 
 The local depth point cloud remains an explicitly identified fallback in screen-reader status if Shadow is offline. No visible text, settings or model controls are added to the phone UI.
 

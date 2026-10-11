@@ -14,7 +14,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from PIL import Image, ImageOps
 from pack_splats import pack_ply
@@ -36,9 +36,10 @@ def model_ready():
         return False
 
 
-async def run_model(inputs, output):
+async def run_model(inputs, output, process_res):
     process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("infer_models.py")),
-        "--input", str(inputs), "--output", str(output), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        "--input", str(inputs), "--output", str(output), "--process-res", str(process_res),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
     try:
         await asyncio.wait_for(process.wait(), timeout=210)
     except (asyncio.TimeoutError, asyncio.CancelledError):
@@ -63,7 +64,7 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
             try:
                 job.update(status="running", progress=20)
                 folder = root / job["id"]
-                metadata = await runner(folder / "input", folder / "output")
+                metadata = await runner(folder / "input", folder / "output", job["process_res"])
                 path = (folder / "output" / metadata["ply"]).resolve()
                 if not path.is_relative_to(folder / "output"):
                     raise ValueError("Invalid model artifact")
@@ -134,12 +135,14 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
         return {"ready": available, "representation": "gaussian-splats", "models": ["Apple SHARP", "depth-anything/DA3NESTED-GIANT-LARGE-1.1"]}
 
     @app.post("/api/reconstruct/jobs", status_code=202, dependencies=[Depends(authorize)])
-    async def create(images: list[UploadFile] = File()):
+    async def create(images: list[UploadFile] = File(), process_res: int = Form(420)):
         cleanup()
+        if process_res not in (336, 420, 504):
+            raise HTTPException(400, "Unsupported model resolution")
         if not available:
             raise HTTPException(503, "CUDA or model dependencies are unavailable")
-        if not 1 <= len(images) <= 8:
-            raise HTTPException(400, "Expected one to eight images")
+        if not 1 <= len(images) <= 6:
+            raise HTTPException(400, "Expected one to six images")
         if queue.full() or len(jobs) >= 32:
             raise HTTPException(429, "GPU queue is full")
         identifier = secrets.token_urlsafe(24)
@@ -163,7 +166,7 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
                         decoded.save(folder / "input" / f"view-{index:02d}.png")
                 await asyncio.to_thread(decode)
                 await image.close()
-            job = {"id": identifier, "created": time.time(), "status": "queued", "progress": 5}
+            job = {"id": identifier, "created": time.time(), "status": "queued", "progress": 5, "process_res": process_res}
             jobs[identifier] = job
             # Re-check after decoding: another request may have filled the queue.
             try:
@@ -183,7 +186,7 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
 
     @app.get("/api/reconstruct/jobs/{identifier}", dependencies=[Depends(authorize)])
     async def status(identifier: str):
-        return {key: value for key, value in lookup(identifier).items() if key != "created"}
+        return {key: value for key, value in lookup(identifier).items() if key not in ("created", "process_res")}
 
     @app.get("/api/reconstruct/jobs/{identifier}/artifact", dependencies=[Depends(authorize)])
     async def artifact(identifier: str, range: str = Header(default="")):
