@@ -6,11 +6,11 @@ Eit kamera som måler uorden. På skjermen er det berre biletet: ingen tekst, in
 
 ## Framsida: kamera til lokal 3D-punktsky
 
-Opne `/` på iPhone og gje kameraet løyve. Eitt trykk på lukkaren tek biletet direkte frå den synlege kameravideoen og viser automatisk ei farga 3D-punktsky. Bileteveljaren oppe til venstre kan opne eit bilete frå telefonen; utan ein kamerastraum kan ein òg bruke den vanlege iOS-kameraveljaren.
+Opne `/` på iPhone og gje kameraet løyve. Skjermen er svart med ein liten, optisk forvrengd søkjar i svart-kvitt. Ingen synleg tekst, overskrifter, faner eller verktøylinje. Eitt kort trykk tek eitt bilete; hald inne i minst 320 ms medan du panorerer langsamt og slepp for å lage ei punktsky av fleire bilete. Opptaket samlar opptil 32 bilete, fire per sekund, med lengste side på 640 piksel. Bilete utan gyldig overlapp blir ikkje lagde ved sida av kvarandre som eit oppdikta panorama.
 
-Dra med éin finger for å rotere, bruk to fingrar for zoom og panorering. Ikona gir nytt bilete, tilbakestilt vising, nedlasting av XYZ/RGB-punkt som `.ply`, og deling av det originale kamerabiletet. Ein kan avbryte berekninga eller prøve det same biletet igjen dersom nedlasting eller 3D-vising feilar.
+Dra med éin finger for å rotere, bruk to fingrar for zoom og panorering. Dobbelttrykk på punktskyen for eit nytt bilete. Utan kamerastraum opnar eit trykk den vanlege bileteveljaren, som òg kan ta eit iOS-kamerabilete eller velje fleire bilete. Skjermlesar og tastatur får eigne kontrollar for import, avbrot og PLY-nedlasting; dei er usynlege fram til tastaturfokus. Escape avbryt. Ved feil kjem berre eit lite symbol for å prøve igjen; forklaringa blir lesen av skjermlesaren.
 
-**Biletet blir handsama lokalt.** Depth Anything V2 Small estimerer relativ invers djupn i ein modul-worker med ONNX Runtime Web 1.30.0 og éin WASM-tråd. Biletet vert projisert til 3D med desse djupneverdiane og dei originale fargane, med opptil 42 000 punkt. Dette er synlege flater med estimert djupn, ikkje ein metrisk skann eller ein komplett modell av baksida. Lysstyrke blir ikkje brukt som erstatning for djupn ved feil.
+**Bileta blir handsama lokalt.** Overlappande opptaksbilete blir registrerte med gradientkorrelasjon og blanda i ein separat worker til eit panorama på høgst 1,6 millionar piksel og 4096 piksel langs lengste side. Depth Anything V2 Small estimerer relativ invers djupn med ONNX Runtime Web 1.30.0 og éin WASM-tråd. Vide bilete blir delte i overlappande modellutsnitt for å ta vare på meir detalj; relativ djupn blir justert mot felles piksel og blanda over saumane. Biletet vert projisert til 3D med desse djupneverdiane og opptil 42 000 punkt. Vising og eksport er monokrome. Dette er synlege flater med estimert djupn, ikkje ein metrisk skann eller ein komplett modell av baksida. Lysstyrke blir ikkje brukt som erstatning for djupn ved feil. Panorering må vere langsamt og ha tydeleg overlapp; stor parallakse, raske rørsler og featurelause flater kan gi færre registrerte bilete eller synlege saumar.
 
 Første berekning lastar ned den offentlege, versjonsfesta ONNX-modellen (27,3 MB frå Hugging Face) og WASM-runtime (14,2 MB frå jsDelivr). Begge blir kontrollerte mot SHA-256 i `static/pointcloud/models/manifest.json` før bruk og blir mellomlagra lokalt dersom lagringsplass er tilgjengeleg. Ingen bilete blir lasta opp av framsida. Inndata beheld retninga og sideforholdet, med tensorstorleikar delelege på 14 og maksimalt 420 piksel. Kameraet og GPU-visinga blir frigjorde når ein tek nytt bilete eller forlèt sida.
 
@@ -22,9 +22,9 @@ Kameraeksperimenta som er dokumenterte nedanfor ligg under `/camera`.
 
 ## Kontroll av punktskyen
 
-`npm test` kontrollerer geometri, RGB, PLY, punktbudsjett, modellkontroll, cache, feilhandsaming og avbrot. `npm run check:pointcloud` lastar ned offentlege kontrollkopiar av dei versjonsfesta modellfilene og køyrer den faktiske browser-workeren med WASM i ein Node-worker for ståande, liggjande og kvadratisk inndata. Filene ligg i den ignorerte `.pointcloud-cache/`. Dette verifiserer modellberekninga, ikkje kamera eller berøringsstyring på ein fysisk iPhone. Køyr òg `npm run check` og `npm run build`.
+`npm test` kontrollerer geometri, RGB, PLY, punktbudsjett, modellkontroll, cache, feilhandsaming, avbrot, trykk/hald, registrering av panorama og justering av djupneutsnitt. `npm run check:pointcloud` lastar ned offentlege kontrollkopiar av dei versjonsfesta modellfilene og køyrer den faktiske browser-workeren med WASM i ein Node-worker for ståande, liggjande, kvadratisk og fleirbilete-inndata. Filene ligg i den ignorerte `.pointcloud-cache/`. Dette verifiserer modellberekninga, ikkje kamera eller berøringsstyring på ein fysisk iPhone. Køyr òg `npm run check` og `npm run build`.
 
-## Bruk på iPhone
+## Kameraeksperimenta på `/camera`: bruk på iPhone
 
 1. Opne sida i Safari.
 2. Del, så «Legg til på heimskjerm». Opne frå ikonet. Gje kameraet løyve.

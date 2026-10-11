@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Worker } from 'node:worker_threads';
 import { imageToPointCloud, pointCloudPLY, inferenceSize, pointStride } from '../static/pointcloud/math.mjs';
+import {stitchPanorama} from '../static/pointcloud/panorama.mjs';
+import {estimateImageDepth} from '../static/pointcloud/tiles.mjs';
 
 const manifest = JSON.parse(await readFile(new URL('../static/pointcloud/models/manifest.json', import.meta.url)));
 const worker = new Worker(new URL('./point-cloud-worker-check.mjs', import.meta.url), { workerData: { manifest } });
@@ -49,6 +51,29 @@ try {
     assert.ok(new TextDecoder().decode(ply.slice(0,260)).includes('relative units'));
     results.push({capture:[width,height],inference:[size.width,size.height],depthRange:[min,max],points:cloud.count,plyBytes:ply.length});
   }
+  const frames=Array.from({length:4},(_,frame)=>{
+    const width=320,height=240,data=new Uint8ClampedArray(width*height*4);
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++) {
+      const px=x+frame*64,i=(y*width+x)*4;
+      data[i]=110+70*Math.sin(px*.095+Math.cos(y*.085)*3);
+      data[i+1]=100+65*Math.cos(y*.115+Math.sin(px*.055)*2);
+      data[i+2]=100+50*Math.sin(px*.065+y*.105);data[i+3]=255;
+    }
+    return {data,width,height};
+  });
+  const panorama=stitchPanorama(frames);
+  assert.ok(panorama.registeredFrames>=3,'Overlapping real pixels must produce a registered panorama');
+  let tileCalls=0;
+  const prediction=await estimateImageDepth(panorama,{estimate:async(data,width,height)=>{
+    tileCalls++;const result=await request({rgba:data.buffer,width,height});
+    return {depth:new Float32Array(result.depth),width:result.width,height:result.height};
+  }},()=>{});
+  assert.ok(tileCalls>1,'Wide panorama must use multiple depth estimates');
+  assert.ok(prediction.depth.every(Number.isFinite));
+  const cloud=imageToPointCloud({rgba:panorama.data,width:panorama.width,height:panorama.height,depth:prediction.depth,
+    depthWidth:prediction.width,depthHeight:prediction.height,stride:pointStride(panorama.width,panorama.height),focalEstimate:panorama.focalEstimate});
+  assert.ok(cloud.count>1000&&cloud.count<=42000);assert.ok(cloud.positions.every(Number.isFinite));
+  results.push({frames:panorama.registeredFrames,capture:[panorama.width,panorama.height],depthTiles:tileCalls,points:cloud.count});
   await assert.rejects(request({rgba:new ArrayBuffer(16),width:2,height:2}),/storleik/);
   console.log(JSON.stringify({runtime:'Actual browser worker, single-thread WASM',modelSHA256:manifest.asset.sha256,captures:results,seconds:Math.round((performance.now()-started)/10)/100}));
 } finally { await worker.terminate(); }
