@@ -19,7 +19,7 @@ export class PointCloudViewer {
     this.renderer = new THREE.WebGLRenderer({
       alpha: false, antialias: false, powerPreference: 'high-performance'
     });
-    this.renderer.setClearColor(0x030405, 1);
+    this.renderer.setClearColor(0x000000, 1);
     this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 1.75));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     host.replaceChildren(this.renderer.domElement);
@@ -86,6 +86,7 @@ export class PointCloudViewer {
         '  vec3 farTone = vec3(0.18, 0.41, 0.51);',
         '  vec3 depthColor = mix(farTone, nearTone, vDepth);',
         '  vec3 rgb = uMode < 0.5 ? vColor : (uMode < 1.5 ? silver : depthColor);',
+        '  if (uMode > 2.5) rgb = vec3(0.32 + 0.68 * dot(vColor, vec3(0.299, 0.587, 0.114)));',
         '  gl_FragColor = vec4(rgb, a * 0.97);',
         '  #include <colorspace_fragment>',
         '}'
@@ -141,11 +142,11 @@ export class PointCloudViewer {
     this.animation = requestAnimationFrame(frame);
   }
 
-  /** @param {'color' | 'silver' | 'depth'} style */
+  /** @param {'color' | 'silver' | 'depth' | 'mono'} style */
   setStyle(style) {
-    if (!['color', 'silver', 'depth'].includes(style)) return;
+    if (!['color', 'silver', 'depth', 'mono'].includes(style)) return;
     this.style = style;
-    this.points.material.uniforms.uMode.value = { color: 0, silver: 1, depth: 2 }[style];
+    this.points.material.uniforms.uMode.value = { color: 0, silver: 1, depth: 2, mono: 3 }[style];
     this.dirty = true;
   }
 

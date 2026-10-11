@@ -35,8 +35,8 @@ function bilinear(data, width, height, x, y) {
     + data[y1 * width + x0] * (1 - a) * b + data[y1 * width + x1] * a * b;
 }
 
-/** @param {{rgba: Uint8ClampedArray, width: number, height: number, depth: Float32Array, depthWidth: number, depthHeight: number, stride?: number}} input */
-export function imageToPointCloud({ rgba, width, height, depth, depthWidth, depthHeight, stride = 2 }) {
+/** @param {{rgba: Uint8ClampedArray, width: number, height: number, depth: Float32Array, depthWidth: number, depthHeight: number, stride?: number, focalEstimate?: number}} input */
+export function imageToPointCloud({ rgba, width, height, depth, depthWidth, depthHeight, stride = 2, focalEstimate }) {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || rgba.length !== width * height * 4) throw new Error('Ugyldig kamerabilete.');
   if (!Number.isInteger(depthWidth) || !Number.isInteger(depthHeight) || depthWidth < 2 || depthHeight < 2 || depth.length !== depthWidth * depthHeight) throw new Error('Ugyldig djupnekart.');
   if (!Number.isInteger(stride) || stride < 1) throw new Error('Ugyldig punktavstand.');
@@ -47,15 +47,17 @@ export function imageToPointCloud({ rgba, width, height, depth, depthWidth, dept
   const span = high - low;
   const count = Math.ceil(width / stride) * Math.ceil(height / stride);
   const positions = new Float32Array(count * 3), colors = new Uint8Array(count * 3);
-  const focal = Math.max(width, height) * .95;
+  const focal = focalEstimate ?? Math.max(width, height) * .95;
+  if (!Number.isFinite(focal) || focal <= 0) throw new Error('Ugyldig kamerageometri.');
   let used = 0, min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   for (let y = 0; y < height; y += stride) for (let x = 0; x < width; x += stride) {
+    const pixel = (y * width + x) * 4;
+    if (rgba[pixel + 3] < 128) continue; // Empty panorama coverage is not a photographed surface.
     const value = bilinear(depth, depthWidth, depthHeight, (x + .5) * depthWidth / width - .5, (y + .5) * depthHeight / height - .5);
     if (!Number.isFinite(value)) continue;
     const inverse = span > 1e-6 ? Math.max(0, Math.min(1, (value - low) / span)) : .5;
     const distance = 1 / (.5 + inverse * 1.1);
     const point = [(x + .5 - width / 2) / focal * distance, -(y + .5 - height / 2) / focal * distance, -distance];
-    const pixel = (y * width + x) * 4;
     for (let c = 0; c < 3; c++) {
       positions[used * 3 + c] = point[c];
       colors[used * 3 + c] = rgba[pixel + c];

@@ -1,144 +1,98 @@
-/**
- * Browser-only panorama registration and feather compositing.
- * Multiple real video frames are aligned into a 2D panorama.
- * Depth is inferred separately; no fabricated multi-view geometry.
- */
-
-/** @typedef {{width:number,height:number,rgba:Uint8ClampedArray}} Frame */
-
-/** @param {Frame} frame @param {number} [maxWidth] */
-export function thumbnail(frame, maxWidth = 120) {
-  const width = Math.min(maxWidth, frame.width);
-  const height = Math.max(12, Math.round(frame.height * width / frame.width));
-  const values = new Uint8Array(width * height);
-  for (let y = 0; y < height; y++) {
-    const sy0 = Math.floor(y * frame.height / height);
-    const sy1 = Math.max(sy0 + 1, Math.ceil((y+1) * frame.height / height));
-    for (let x = 0; x < width; x++) {
-      const sx0 = Math.floor(x * frame.width / width);
-      const sx1 = Math.max(sx0 + 1, Math.ceil((x+1) * frame.width / width));
-      let sum = 0, count = 0;
-      for (let sy = sy0; sy < Math.min(frame.height,sy1); sy++)
-        for (let sx = sx0; sx < Math.min(frame.width,sx1); sx++) {
-          const i = (sy * frame.width + sx) * 4;
-          sum += frame.rgba[i] * 0.299 + frame.rgba[i+1] * 0.587 + frame.rgba[i+2] * 0.114;
-          count++;
-        }
-      values[y * width + x] = Math.round(sum / count);
+/** @typedef {{data: Uint8ClampedArray, width: number, height: number}} Frame */
+/** @param {Frame} frame */
+function gradients(frame) {
+  const scale = 128 / Math.max(frame.width, frame.height);
+  const width = Math.max(24, Math.round(frame.width * scale)), height = Math.max(24, Math.round(frame.height * scale));
+  const gray = new Float32Array(width * height), gx = new Float32Array(gray.length), gy = new Float32Array(gray.length);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const left=Math.floor(x*frame.width/width),right=Math.max(left+1,Math.floor((x+1)*frame.width/width));
+    const top=Math.floor(y*frame.height/height),bottom=Math.max(top+1,Math.floor((y+1)*frame.height/height));
+    let sum=0,n=0;
+    for(let sy=top;sy<Math.min(frame.height,bottom);sy++)for(let sx=left;sx<Math.min(frame.width,right);sx++) {
+      const at=(sy*frame.width+sx)*4;
+      sum+=frame.data[at]*.299+frame.data[at+1]*.587+frame.data[at+2]*.114;n++;
     }
+    gray[y*width+x]=sum/Math.max(1,n);
   }
-  return { width, height, values };
+  for (let y = 1; y < height - 1; y++) for (let x = 1; x < width - 1; x++) {
+    const i = y * width + x; gx[i] = gray[i + 1] - gray[i - 1]; gy[i] = gray[i + width] - gray[i - width];
+  }
+  return {gx,gy,width,height};
+}
+/** @param {ReturnType<typeof gradients>} a @param {ReturnType<typeof gradients>} b @param {number} dx @param {number} dy */
+function correlation(a, b, dx, dy) {
+  const left = Math.max(2, 2 - dx), right = Math.min(a.width - 2, a.width - 2 - dx);
+  const top = Math.max(2, 2 - dy), bottom = Math.min(a.height - 2, a.height - 2 - dy);
+  let aa = 0, bb = 0, ab = 0, n = 0;
+  for (let y = top; y < bottom; y += 3) for (let x = left; x < right; x += 3) {
+    const i = y * a.width + x, j = (y + dy) * a.width + x + dx;
+    aa += a.gx[i] ** 2 + a.gy[i] ** 2; bb += b.gx[j] ** 2 + b.gy[j] ** 2;
+    ab += a.gx[i] * b.gx[j] + a.gy[i] * b.gy[j]; n++;
+  }
+  if (n < 120 || aa / n < 12 || bb / n < 12) return -1;
+  return ab / Math.sqrt(aa * bb);
+}
+/** @param {Frame} previous @param {Frame} current */
+export function estimateTranslation(previous, current) {
+  if (previous.width !== current.width || previous.height !== current.height) return null;
+  const a = gradients(previous), b = gradients(current);
+  const maxX = Math.floor(a.width * .36), maxY = Math.floor(a.height * .36);
+  let best = {x:0,y:0,score:-1,confidence:0};
+  /** @param {number} x @param {number} y */
+  function candidate(x, y) {
+    const confidence = correlation(a, b, x, y);
+    const score = confidence - .025 * (Math.abs(x) / a.width + Math.abs(y) / a.height);
+    if (score > best.score) best = {x,y,score,confidence};
+  }
+  // Full pixel search avoids mistaking aliased texture for the best coarse-grid match.
+  for (let y = -maxY; y <= maxY; y++) for (let x = -maxX; x <= maxX; x++) candidate(x,y);
+  candidate(0,0);
+  if (best.confidence < .72) return null;
+  return {x:best.x * previous.width / a.width, y:best.y * previous.height / a.height, confidence:best.confidence};
 }
 
-/** @param {{width:number,height:number,values:Uint8Array}} a @param {{width:number,height:number,values:Uint8Array}} b */
-export function estimateTranslation(a, b) {
-  if (a.width !== b.width || a.height !== b.height) throw new Error('Frames have different sizes');
-  const w = a.width, h = a.height;
-  const maxDx = Math.max(2, Math.floor(w * 0.38));
-  const maxDy = Math.max(2, Math.floor(h * 0.28));
-  const errorAt = (dx, dy) => {
-    const x0 = Math.max(0, dx), x1 = Math.min(w, w + dx);
-    const y0 = Math.max(0, dy), y1 = Math.min(h, h + dy);
-    const overlap = (x1-x0)*(y1-y0)/(w*h);
-    if (overlap < 0.46) return Infinity;
-    let error = 0, samples = 0;
-    for (let y = y0+1; y < y1-1; y += 2) {
-      const ay = y*w, by = (y-dy)*w;
-      for (let x = x0+1; x < x1-1; x += 2) {
-        const i = ay+x, j = by+x-dx;
-        // Edges are useful for matching; ignore near-featureless pixels.
-        const gradient = Math.abs(a.values[i]-a.values[i-1]) +
-          Math.abs(a.values[i]-a.values[i-w]);
-        if (gradient < 9) continue;
-        error += Math.abs(a.values[i]-b.values[j]);
-        samples++;
-      }
-    }
-    if (samples < 20) return Infinity;
-    return error / samples + (1-overlap)*7 + (Math.abs(dx)/w + Math.abs(dy)/h)*1.3;
-  };
-  const baseline = errorAt(0, 0);
-  if (!Number.isFinite(baseline)) return null;
-  let best = {dx:0,dy:0,score:baseline};
-  for (let dy = -maxDy; dy <= maxDy; dy++) {
-    for (let dx = -maxDx; dx <= maxDx; dx++) {
-      const score = errorAt(dx,dy);
-      if (score < best.score) best = {dx,dy,score};
-    }
-  }
-  const rough = best;
-  for (let dy = Math.max(-maxDy,rough.dy-3); dy <= Math.min(maxDy,rough.dy+3); dy++) {
-    for (let dx = Math.max(-maxDx,rough.dx-3); dx <= Math.min(maxDx,rough.dx+3); dx++) {
-      const score = errorAt(dx,dy);
-      if (score < best.score) best = {dx,dy,score};
-    }
-  }
-  if (best.score > 45 || baseline - best.score < 1.5 ||
-      (Math.abs(best.dx) < 2 && Math.abs(best.dy) < 2)) return null;
-  return {...best, improvement:baseline-best.score};
-}
-
-/** @param {Frame[]} frames @param {{maxWidth?:number,maxHeight?:number,maxPixels?:number}} [options] */
-export function stitchFrames(frames, options = {}) {
-  if (!Array.isArray(frames) || frames.length < 1 || frames.length > 36) throw new Error('Invalid frame sequence');
-  const first = frames[0], w = first.width, h = first.height;
-  if (!Number.isInteger(w) || !Number.isInteger(h) || w < 24 || h < 24 || w*h > 600000) throw new Error('Invalid frame dimensions');
+/** Register overlapping frames; never invent an offset for unmatchable images. @param {Frame[]} frames */
+export function registerFrames(frames) {
+  if (!frames.length) throw new Error('Ingen bilete vart tekne.');
+  if (frames.length > 32) throw new Error('For mange bilete i opptaket.');
   for (const frame of frames) {
-    if (frame.width !== w || frame.height !== h || !(frame.rgba instanceof Uint8ClampedArray) ||
-        frame.rgba.length !== w*h*4) throw new Error('Invalid frame pixels');
+    if (!Number.isInteger(frame.width) || !Number.isInteger(frame.height) || frame.width < 1 || frame.height < 1 || frame.width*frame.height > 1000000 || !(frame.data instanceof Uint8ClampedArray) || frame.data.length !== frame.width*frame.height*4) throw new Error('Ugyldig kamerabilete.');
   }
-  const accepted = [{frame:first,x:0,y:0}];
-  let last = thumbnail(first), x=0, y=0;
-  for (let i=1;i<frames.length;i++) {
-    const current = thumbnail(frames[i]);
-    const shift = estimateTranslation(last,current);
-    if (!shift) continue;
-    x += shift.dx*w/current.width;
-    y += shift.dy*h/current.height;
-    accepted.push({frame:frames[i],x,y});
-    last = current;
+  const placements = [{index:0,x:0,y:0}];
+  for (let index = 1; index < frames.length; index++) {
+    const last = placements[placements.length - 1];
+    const move = estimateTranslation(frames[last.index], frames[index]);
+    if (!move || Math.hypot(move.x,move.y) < 2) continue;
+    placements.push({index,x:last.x - move.x,y:last.y - move.y});
   }
-  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-  for (const item of accepted) {
-    minX=Math.min(minX,item.x);minY=Math.min(minY,item.y);
-    maxX=Math.max(maxX,item.x+w);maxY=Math.max(maxY,item.y+h);
-  }
-  const fullWidth=Math.ceil(maxX-minX),fullHeight=Math.ceil(maxY-minY);
-  const maxWidth=options.maxWidth ?? 3072, maxHeight=options.maxHeight ?? 2048;
-  const maxPixels=options.maxPixels ?? 2100000;
-  const scale=Math.min(1,maxWidth/fullWidth,maxHeight/fullHeight,Math.sqrt(maxPixels/(fullWidth*fullHeight)));
-  const width=Math.max(1,Math.floor(fullWidth*scale)),height=Math.max(1,Math.floor(fullHeight*scale));
-  const sum=new Float32Array(width*height*4);
-  for (const item of accepted) {
-    const left=Math.round((item.x-minX)*scale),top=Math.round((item.y-minY)*scale);
-    const sw=Math.max(1,Math.round(w*scale)),sh=Math.max(1,Math.round(h*scale));
-    for (let py=0;py<sh;py++) {
-      const dy=top+py;
-      if (dy<0 || dy>=height) continue;
-      const sy=Math.min(h-1,Math.floor((py+0.5)*h/sh));
-      for (let px=0;px<sw;px++) {
-        const dx=left+px;
-        if (dx<0 || dx>=width) continue;
-        const sx=Math.min(w-1,Math.floor((px+0.5)*w/sw));
-        const edge=Math.min(px,sw-1-px,py,sh-1-py);
-        const feather=Math.max(0.08,Math.min(1,edge/Math.max(1,Math.min(sw,sh)*0.14)));
-        const from=(sy*w+sx)*4,to=(dy*width+dx)*4;
-        const alpha=item.frame.rgba[from+3]/255*feather;
-        sum[to]+=item.frame.rgba[from]*alpha;
-        sum[to+1]+=item.frame.rgba[from+1]*alpha;
-        sum[to+2]+=item.frame.rgba[from+2]*alpha;
-        sum[to+3]+=alpha;
-      }
+  return placements;
+}
+
+/** Feather the registered frames into a bounded panorama. @param {Frame[]} frames */
+export function stitchPanorama(frames) {
+  const placements = registerFrames(frames);
+  const minX = Math.min(...placements.map(p=>p.x)), minY = Math.min(...placements.map(p=>p.y));
+  const maxX = Math.max(...placements.map(p=>p.x+frames[p.index].width)), maxY = Math.max(...placements.map(p=>p.y+frames[p.index].height));
+  const spanW = maxX-minX, spanH = maxY-minY;
+  const scale = Math.min(1,4096/Math.max(spanW,spanH),Math.sqrt(1600000/(spanW*spanH)));
+  const width = Math.max(1,Math.ceil(spanW*scale)), height = Math.max(1,Math.ceil(spanH*scale));
+  const sums = new Uint32Array(width*height*3), weights = new Uint16Array(width*height);
+  for (const placement of placements) {
+    const frame = frames[placement.index], left = (placement.x-minX)*scale, top = (placement.y-minY)*scale;
+    for (let y=Math.max(0,Math.ceil(top));y<Math.min(height,Math.floor(top+frame.height*scale));y++) for (let x=Math.max(0,Math.ceil(left));x<Math.min(width,Math.floor(left+frame.width*scale));x++) {
+      const sx=Math.min(frame.width-1,Math.floor((x-left)/scale)), sy=Math.min(frame.height-1,Math.floor((y-top)/scale));
+      const weight=Math.max(1,Math.min(16,1+Math.floor(Math.min(sx,sy,frame.width-1-sx,frame.height-1-sy)/8)));
+      const at=y*width+x, source=(sy*frame.width+sx)*4;
+      weights[at]+=weight;
+      for(let c=0;c<3;c++)sums[at*3+c]+=frame.data[source+c]*weight;
     }
   }
-  const rgba=new Uint8ClampedArray(width*height*4);
-  for (let i=0;i<width*height;i++) {
-    const k=i*4,weight=sum[k+3];
-    if (!weight) continue;
-    rgba[k]=sum[k]/weight;
-    rgba[k+1]=sum[k+1]/weight;
-    rgba[k+2]=sum[k+2]/weight;
-    rgba[k+3]=255;
+  const data=new Uint8ClampedArray(width*height*4);
+  for(let i=0;i<weights.length;i++) if(weights[i]) {
+    for(let c=0;c<3;c++)data[i*4+c]=Math.round(sums[i*3+c]/weights[i]);
+    data[i*4+3]=255;
   }
-  return {width,height,rgba,accepted:accepted.length,captured:frames.length,positions:accepted.map(({x,y})=>({x,y}))};
+  return {data,width,height,inputFrames:frames.length,registeredFrames:placements.length,
+    focalEstimate:Math.max(frames[0].width,frames[0].height)*.95*scale,
+    horizontal:spanW>frames[0].width*1.15,vertical:spanH>frames[0].height*1.15};
 }
