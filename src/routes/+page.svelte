@@ -114,7 +114,7 @@
 	function stitch(frames: Pixels[]): Promise<Capture> {
 		if (frames.length === 1) return Promise.resolve({ ...frames[0], inputFrames: 1, registeredFrames: 1 });
 		return new Promise((resolve, reject) => {
-			const worker = new Worker('/pointcloud/panorama-worker.mjs?v=4', { type: 'module' });
+			const worker = new Worker('/pointcloud/panorama-worker.mjs?v=5', { type: 'module' });
 			panoramaWorker = worker;
 			const timer = setTimeout(() => finish(new Error('Panoramaet tok for lang tid. Prøv ei kortare rørsle.')), 60000);
 			function finish(error: unknown, result?: Capture) {
@@ -191,9 +191,7 @@
 			return { source: image, width: image.naturalWidth, height: image.naturalHeight, close: () => URL.revokeObjectURL(url) };
 		} catch { URL.revokeObjectURL(url); throw new Error('Kunne ikkje opne biletet. Prøv JPEG eller PNG.'); }
 	}
-	async function capture(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		const files = Array.from(input.files ?? []).slice(0, 32); input.value = '';
+	async function captureFiles(files: File[]) {
 		if (!files.length || mode !== 'camera') return;
 		const id = ++generation; mode = 'working'; stopCamera();
 		try {
@@ -207,6 +205,17 @@
 			}
 			await finishCapture(frames, id);
 		} catch (error) { fail(error, id); }
+	}
+	function capture(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const files = Array.from(input.files ?? []).slice(0, 32); input.value = '';
+		void captureFiles(files);
+	}
+	function pasteCapture(event: ClipboardEvent) {
+		if (mode !== 'camera') return;
+		const files = Array.from(event.clipboardData?.files ?? []).filter(file => file.type.startsWith('image/')).slice(0, 32);
+		if (!files.length) return;
+		event.preventDefault(); void captureFiles(files);
 	}
 	async function retake() {
 		generation++; recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); captured = null;
@@ -264,7 +273,7 @@
 	<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
 	<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
 </svelte:head>
-<svelte:window onkeydown={keys} />
+<svelte:window onkeydown={keys} onpaste={pasteCapture} />
 <main class="studio" class:recording={mode === 'recording'} class:working={mode === 'working'} class:result={mode === 'done'}>
 	<video bind:this={video} autoplay muted playsinline aria-hidden="true" tabindex="-1"></video>
 	<div class="finder" class:hidden={mode === 'done'} aria-hidden="true">
