@@ -12,11 +12,19 @@ export function thumbnail(frame, maxWidth = 84) {
   const height = Math.max(12, Math.round(frame.height * width / frame.width));
   const values = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
-    const sy = Math.min(frame.height - 1, Math.floor((y + 0.5) * frame.height / height));
+    const sy0 = Math.floor(y * frame.height / height);
+    const sy1 = Math.max(sy0 + 1, Math.ceil((y+1) * frame.height / height));
     for (let x = 0; x < width; x++) {
-      const sx = Math.min(frame.width - 1, Math.floor((x + 0.5) * frame.width / width));
-      const i = (sy * frame.width + sx) * 4;
-      values[y * width + x] = Math.round(frame.rgba[i] * 0.299 + frame.rgba[i+1] * 0.587 + frame.rgba[i+2] * 0.114);
+      const sx0 = Math.floor(x * frame.width / width);
+      const sx1 = Math.max(sx0 + 1, Math.ceil((x+1) * frame.width / width));
+      let sum = 0, count = 0;
+      for (let sy = sy0; sy < Math.min(frame.height,sy1); sy++)
+        for (let sx = sx0; sx < Math.min(frame.width,sx1); sx++) {
+          const i = (sy * frame.width + sx) * 4;
+          sum += frame.rgba[i] * 0.299 + frame.rgba[i+1] * 0.587 + frame.rgba[i+2] * 0.114;
+          count++;
+        }
+      values[y * width + x] = Math.round(sum / count);
     }
   }
   return { width, height, values };
