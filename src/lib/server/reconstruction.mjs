@@ -34,15 +34,24 @@ export function reconstructionProxy({request = fetch, env = process.env} = {}) {
       const origin = incoming.headers.get('origin');
       if (origin && origin !== new URL(incoming.url).origin) return failure('Ugyldig opphav.', 403);
       if (Number(incoming.headers.get('content-length')) > MAX_UPLOAD + 32_768) return failure('Kamerabileta er for store.', 413);
-      let images;
-      try { images = (await incoming.formData()).getAll('images'); }
+      let images, requested;
+      try {
+        const submitted = await incoming.formData();
+        images = submitted.getAll('images');
+        requested = submitted.getAll('process_res');
+      }
       catch { return failure('Kunne ikkje lese kamerabileta.', 400); }
-      if (!images.length || images.length > 8 || images.some(file => !(file instanceof File) || !['image/jpeg','image/png','image/webp'].includes(file.type) || !file.size)) {
-        return failure('Send eitt til åtte kamerabilete.', 400);
+      const processRes = requested.length ? requested[0] : '420';
+      if (requested.length > 1 || typeof processRes !== 'string' || !['336', '420', '504'].includes(processRes)) {
+        return failure('Ugyldig modelloppløysing.', 400);
+      }
+      if (!images.length || images.length > 6 || images.some(file => !(file instanceof File) || !['image/jpeg','image/png','image/webp'].includes(file.type) || !file.size)) {
+        return failure('Send eitt til seks kamerabilete.', 400);
       }
       const files = /** @type {File[]} */ (images);
       if (files.reduce((sum, file) => sum + file.size, 0) > MAX_UPLOAD) return failure('Kamerabileta er for store.', 413);
       const form = new FormData(); files.forEach((file, i) => form.append('images', file, `view-${i}.jpg`));
+      form.set('process_res', processRes);
       try {
         const response = await upstream('/api/reconstruct/jobs', {method: 'POST', body: form, signal: incoming.signal}, 45_000);
         const data = await response.json();

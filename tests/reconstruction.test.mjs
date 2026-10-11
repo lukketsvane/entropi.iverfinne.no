@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {reconstructionFrames, downloadSplats, MAX_FRAMES, ARTIFACT_CHUNK} from '../src/lib/pointcloud/reconstruct.mjs';
+import {reconstructionFrames, processResolution, encodeCapture, downloadSplats, MAX_FRAMES, ARTIFACT_CHUNK} from '../src/lib/pointcloud/reconstruct.mjs';
 import {reconstructionProxy} from '../src/lib/server/reconstruction.mjs';
 
 const token = 'test-private-token-must-never-reach-phone';
@@ -18,6 +18,36 @@ test('held capture retains bounded distinct camera views and both ends, rather t
   assert.equal(reconstructionFrames([]).length, 0);
 });
 
+test('view density selects bounded DA3 reconstruction resolution with balanced quality by default', () => {
+  assert.equal(processResolution(), 420);
+  assert.equal(processResolution(.2), 336);
+  assert.equal(processResolution(.6), 420);
+  assert.equal(processResolution(1), 504);
+});
+
+test('six independent views encode sequentially and reduce resolution only after quality retries', async () => {
+  const frames = Array.from({length: MAX_FRAMES}, () => ({width: 960, height: 720, data: new Uint8ClampedArray(0)}));
+  let active = 0, peak = 0;
+  const attempts = [];
+  const encode = async (_frame, quality, edge) => {
+    active++; peak = Math.max(peak, active); attempts.push([quality, edge]);
+    await Promise.resolve(); active--;
+    return new Blob([new Uint8Array(edge >= 800 ? 750_000 : 400_000)]);
+  };
+  const images = await encodeCapture(frames, 4_000_000, encode);
+  assert.equal(images.length, MAX_FRAMES);
+  assert.equal(peak, 1);
+  assert.deepEqual(attempts[0], [.86, 960]);
+  assert.ok(attempts.some(([, edge]) => edge === 800));
+  assert.deepEqual(attempts.at(-1), [.86, 640]);
+  assert.equal(images.reduce((sum, image) => sum + image.size, 0), MAX_FRAMES * 400_000);
+  const single = await encodeCapture([{width: 1536, height: 1024, data: new Uint8ClampedArray(0)}], 4_000_000, async (_frame, _quality, edge) => {
+    assert.equal(edge, 1536);
+    return new Blob(['single']);
+  });
+  assert.equal(single.length, 1);
+});
+
 test('Shadow health is authenticated server-side and distinguishes genuine Gaussian readiness', async () => {
   const proxy = reconstructionProxy({env, request: async (url, init) => {
     assert.equal(String(url), 'https://shadow.example/api/reconstruct/health');
@@ -32,21 +62,45 @@ test('Shadow health is authenticated server-side and distinguishes genuine Gauss
   assert.equal((await offline.health()).status, 503);
 });
 
-test('capture upload preserves individual views and rejects cross-origin or oversized submissions', async () => {
-  let called = 0;
+test('capture upload forwards selected resolution and rejects invalid, cross-origin or oversized submissions', async () => {
+  const resolutions = [];
   const proxy = reconstructionProxy({env, request: async (_, init) => {
-    called++; assert.equal(init.body.getAll('images').length, 2);
+    resolutions.push(init.body.get('process_res')); assert.equal(init.body.getAll('images').length, 2);
     assert.equal(init.headers.get('Authorization'), `Bearer ${token}`);
     return Response.json({id, status: 'queued'});
   }});
   const form = new FormData();
   form.append('images', new Blob(['camera one'], {type: 'image/jpeg'}), 'one.jpg');
   form.append('images', new Blob(['camera two'], {type: 'image/jpeg'}), 'two.jpg');
+  form.set('process_res', '420');
   const incoming = (headers) => new Request('https://entropi.iverfinne.no/api/reconstruct/jobs', {method: 'POST', body: form, headers});
   const good = await proxy.create(incoming({Origin: 'https://entropi.iverfinne.no'}));
   assert.equal(good.status, 202); assert.equal((await good.json()).id, id);
   assert.equal((await proxy.create(incoming({Origin: 'https://other.example'}))).status, 403);
-  assert.equal((await proxy.create(incoming({'Content-Length': '4500000'}))).status, 413); assert.equal(called, 1);
+  assert.equal((await proxy.create(incoming({'Content-Length': '4500000'}))).status, 413);
+  form.set('process_res', '999');
+  assert.equal((await proxy.create(incoming({}))).status, 400);
+  form.append('process_res', '336');
+  assert.equal((await proxy.create(incoming({}))).status, 400);
+  form.delete('process_res');
+  assert.equal((await proxy.create(incoming({}))).status, 202);
+  assert.deepEqual(resolutions, ['420', '420']);
+});
+
+test('Vercel forwards six views but rejects a seventh', async () => {
+  let forwarded = 0;
+  const proxy = reconstructionProxy({env, request: async (_, init) => {
+    forwarded = init.body.getAll('images').length;
+    return Response.json({id});
+  }});
+  const form = new FormData();
+  for (let i = 0; i < MAX_FRAMES; i++) form.append('images', new Blob(['view'], {type: 'image/jpeg'}), `${i}.jpg`);
+  const incoming = () => new Request('https://entropi.iverfinne.no/api/reconstruct/jobs', {method: 'POST', body: form});
+  assert.equal((await proxy.create(incoming())).status, 202);
+  assert.equal(forwarded, MAX_FRAMES);
+  form.append('images', new Blob(['extra'], {type: 'image/jpeg'}), 'extra.jpg');
+  assert.equal((await proxy.create(incoming())).status, 400);
+  assert.equal(forwarded, MAX_FRAMES);
 });
 
 test('large true Gaussian artifact downloads through bounded Vercel responses and verifies SHA-256', async () => {

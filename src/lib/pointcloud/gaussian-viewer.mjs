@@ -11,14 +11,15 @@ import {attachViewerGestures, noAdjust} from './viewer-gestures.ts';
 export async function createGaussianViewer(host, bytes, initial, onError, signal, onAdjust = noAdjust) {
   const {SparkRenderer, SplatMesh} = await import('@sparkjsdev/spark');
   signal.throwIfAborted();
-  const renderer = new THREE.WebGLRenderer({antialias: false, alpha: false, powerPreference: 'high-performance'});
-  renderer.setClearColor(0x000000, 1);
+  const renderer = new THREE.WebGLRenderer({antialias: false, alpha: true, powerPreference: 'high-performance'});
+  renderer.setClearColor(0x000000, 0);
   renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 1.5));
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(55, 1, .01, 1000);
-  const spark = new SparkRenderer({renderer, maxStdDev: Math.sqrt(8), minAlpha: 1 / 255});
+  const lodBudget = globalThis.matchMedia?.('(pointer:coarse)').matches ? 350_000 : 2_500_000;
+  const spark = new SparkRenderer({renderer, maxStdDev: Math.sqrt(8), minAlpha: 1 / 255, lodSplatCount: lodBudget});
   scene.add(spark);
-  const mesh = new SplatMesh({fileBytes: bytes, fileName: 'scene.splat', lod: true, enableLod: false});
+  const mesh = new SplatMesh({fileBytes: bytes, fileName: 'scene.splat', lod: true, enableLod: true});
   // Both model pipelines export OpenCV coordinates (x right, y down, z forward).
   mesh.rotation.x = Math.PI;
   scene.add(mesh);
@@ -27,8 +28,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
   controls.rotateSpeed = .4; controls.zoomSpeed = .65;
   const gestures = attachViewerGestures(renderer.domElement, {
     onDensity(value) {
-      mesh.enableLod = value < 0.999;
-      spark.lodSplatCount = Math.max(1, Math.round(mesh.numSplats * value));
+      spark.lodSplatCount = Math.max(1, Math.round(lodBudget * value));
       spark.setDirty();
     },
     onPinch(scale) {
@@ -98,6 +98,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
         if (!context) throw new Error('Kunne ikkje klargjere Gaussian-utskrifta.');
         // Re-render synchronously so iOS has not discarded the drawing buffer.
         renderer.render(scene, camera);
+        context.fillStyle = '#000'; context.fillRect(0, 0, canvas.width, canvas.height);
         context.filter = gestures.state.filter;
         context.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height);
         return canvas;

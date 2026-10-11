@@ -69,8 +69,10 @@ class GaussianPacking(unittest.TestCase):
 class ShadowService(unittest.TestCase):
     def test_authenticated_capture_worker_and_chunked_artifact(self):
         seen = []
-        async def predict(inputs, output):
+        resolutions = []
+        async def predict(inputs, output, process_res):
             seen.extend(inputs.glob("*.png"))
+            resolutions.append(process_res)
             output.mkdir()
             gaussian_ply(output / "scene.ply")
             return {"ply": "scene.ply", "model": "synthetic test Gaussians", "camera": {"position": [0, 0, 0], "target": [0, 0, 3], "up": [0, -1, 0], "fov": 55}}
@@ -94,6 +96,7 @@ class ShadowService(unittest.TestCase):
                 self.assertEqual(job["sizeBytes"], 32)
                 self.assertEqual(len(job["sha256"]), 64)
                 self.assertEqual(len(seen), 1)
+                self.assertEqual(resolutions, [420])
                 artifact = client.get(path + "/artifact", headers={**AUTH, "Range": "bytes=0-31"})
                 self.assertEqual(artifact.status_code, 206)
                 self.assertEqual(artifact.headers["content-range"], "bytes 0-31/32")
@@ -104,7 +107,7 @@ class ShadowService(unittest.TestCase):
                 self.assertFalse((Path(directory) / identifier / "output").exists())
 
     def test_model_failures_never_publish_an_artifact(self):
-        async def fail(inputs, output):
+        async def fail(inputs, output, process_res):
             raise RuntimeError("test model error")
         with tempfile.TemporaryDirectory() as directory:
             with TestClient(create_app(token=TOKEN, root=directory, runner=fail, ready=lambda: True)) as client:
@@ -119,6 +122,32 @@ class ShadowService(unittest.TestCase):
                     time.sleep(.01)
                 self.assertEqual(job["status"], "failed")
                 self.assertEqual(client.get(path + "/artifact", headers={**AUTH, "Range": "bytes=0-31"}).status_code, 409)
+
+    def test_selected_resolution_reaches_worker(self):
+        seen = []
+        async def predict(inputs, output, process_res):
+            seen.append((len(list(inputs.glob("*.png"))), process_res))
+            output.mkdir()
+            gaussian_ply(output / "scene.ply")
+            return {"ply": "scene.ply", "model": "synthetic", "camera": {}}
+        with tempfile.TemporaryDirectory() as directory:
+            with TestClient(create_app(token=TOKEN, root=directory, runner=predict, ready=lambda: True)) as client:
+                image = io.BytesIO()
+                Image.new("RGB", (12, 12)).save(image, format="PNG")
+                files = [("images", (f"view-{i}.png", image.getvalue(), "image/png")) for i in range(6)]
+                self.assertEqual(client.post("/api/reconstruct/jobs", headers=AUTH, data={"process_res": "999"}, files=files).status_code, 400)
+                self.assertEqual(client.post("/api/reconstruct/jobs", headers=AUTH, files=files + files[:1]).status_code, 400)
+                response = client.post("/api/reconstruct/jobs", headers=AUTH, data={"process_res": "420"}, files=files)
+                self.assertEqual(response.status_code, 202)
+                path = "/api/reconstruct/jobs/" + response.json()["id"]
+                for _ in range(100):
+                    job = client.get(path, headers=AUTH).json()
+                    if job["status"] in ["succeeded", "failed"]:
+                        break
+                    time.sleep(.01)
+                self.assertEqual(job["status"], "succeeded")
+                self.assertEqual(seen, [(6, 420)])
+                self.assertNotIn("process_res", job)
 
 
 if __name__ == "__main__":

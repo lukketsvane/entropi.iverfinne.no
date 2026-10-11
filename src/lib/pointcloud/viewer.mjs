@@ -26,9 +26,9 @@ export class PointCloudViewer {
     this.style = 'color';
     this.pointSize = 1;
     this.renderer = new THREE.WebGLRenderer({
-      alpha: false, antialias: false, powerPreference: 'high-performance'
+      alpha: true, antialias: false, powerPreference: 'high-performance'
     });
-    this.renderer.setClearColor(0x000000, 1);
+    this.renderer.setClearColor(0x000000, 0);
     this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 1.75));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     host.replaceChildren(this.renderer.domElement);
@@ -218,6 +218,7 @@ export class PointCloudViewer {
     try {
       this.points.material.uniforms.uMode.value = 3;
       this.renderer.render(this.scene, this.camera);
+      context.fillStyle = '#000'; context.fillRect(0, 0, canvas.width, canvas.height);
       context.filter = this.gestures.state.filter;
       context.drawImage(this.renderer.domElement, 0, 0, canvas.width, canvas.height);
     } finally {

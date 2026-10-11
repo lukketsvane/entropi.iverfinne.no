@@ -1,8 +1,12 @@
-export const MAX_FRAMES = 8;
+import {encodeCapture} from './encode-capture.ts';
+export {encodeCapture};
+
+export const MAX_FRAMES = 6;
 export const MAX_UPLOAD = 4_000_000;
 export const ARTIFACT_CHUNK = 2_000_000;
 export const MAX_ARTIFACT = 96_000_000;
 const JOB_ID = /^[a-zA-Z0-9_-]{8,128}$/;
+export const processResolution = (density = .7) => density < .45 ? 336 : density < .8 ? 420 : 504;
 /** @typedef {{data:Uint8ClampedArray,width:number,height:number}} Pixels */
 /** @typedef {{percent?:number,phase:string}} Progress */
 
@@ -27,20 +31,6 @@ export function reconstructionFrames(frames) {
   return Array.from({length: MAX_FRAMES}, (_, i) => distinct[Math.round(i * (distinct.length - 1) / (MAX_FRAMES - 1))]);
 }
 
-/** @param {Pixels} frame @param {number} quality */
-async function jpeg(frame, quality) {
-  const canvas = document.createElement('canvas');
-  canvas.width = frame.width; canvas.height = frame.height;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Kunne ikkje lese kamerabiletet.');
-  context.putImageData(new ImageData(new Uint8ClampedArray(frame.data), frame.width, frame.height), 0, 0);
-  /** @type {Blob} */ const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob(value => value ? resolve(value) : reject(new Error('Kunne ikkje klargjere biletet.')), 'image/jpeg', quality);
-  });
-  canvas.width = canvas.height = 1;
-  return blob;
-}
-
 /** Download bounded responses: a Gaussian artifact is larger than Vercel's buffered response limit.
  * @param {string} id @param {number} size @param {string} hash @param {AbortSignal} signal
  * @param {typeof fetch} request */
@@ -49,17 +39,21 @@ export async function downloadSplats(id, size, hash, signal, request = fetch) {
     throw new Error('Modelltenaren gav ei ugyldig Gaussian-fil.');
   }
   const bytes = new Uint8Array(size);
-  for (let start = 0; start < size; start += ARTIFACT_CHUNK) {
-    const end = Math.min(size - 1, start + ARTIFACT_CHUNK - 1);
-    const response = await request(`/api/reconstruct/jobs/${id}/artifact`, {
-      headers: {Range: `bytes=${start}-${end}`}, signal, cache: 'no-store'
-    });
-    if (response.status !== 206 || response.headers.get('Content-Range') !== `bytes ${start}-${end}/${size}`) {
-      throw new Error('Gaussian-fila vart ikkje overført fullstendig.');
-    }
-    const part = new Uint8Array(await response.arrayBuffer());
-    if (part.length !== end - start + 1) throw new Error('Gaussian-fila er ufullstendig.');
-    bytes.set(part, start);
+  for (let batch = 0; batch < size; batch += ARTIFACT_CHUNK * 3) {
+    const count = Math.min(3, Math.ceil((size - batch) / ARTIFACT_CHUNK));
+    await Promise.all(Array.from({length: count}, async (_, index) => {
+      const start = batch + index * ARTIFACT_CHUNK;
+      const end = Math.min(size - 1, start + ARTIFACT_CHUNK - 1);
+      const response = await request(`/api/reconstruct/jobs/${id}/artifact`, {
+        headers: {Range: `bytes=${start}-${end}`}, signal, cache: 'no-store'
+      });
+      if (response.status !== 206 || response.headers.get('Content-Range') !== `bytes ${start}-${end}/${size}`) {
+        throw new Error('Gaussian-fila vart ikkje overført fullstendig.');
+      }
+      const part = new Uint8Array(await response.arrayBuffer());
+      if (part.length !== end - start + 1) throw new Error('Gaussian-fila er ufullstendig.');
+      bytes.set(part, start);
+    }));
   }
   if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('Kontrollsummen for Gaussian-fila manglar.');
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
@@ -71,7 +65,7 @@ export async function downloadSplats(id, size, hash, signal, request = fetch) {
 
 /** Actual 3DGS inference runs on Shadow; the browser only captures, uploads and renders.
  * @param {Pixels[]} frames @param {(update:Progress)=>void} update @param {AbortSignal} signal */
-export async function reconstructGaussian(frames, update, signal) {
+export async function reconstructGaussian(frames, update, signal, density = .7) {
   signal.throwIfAborted();
   const available = await fetch('/api/reconstruct/health', { signal, cache: 'no-store' });
   const health = await available.json();
@@ -80,11 +74,10 @@ export async function reconstructGaussian(frames, update, signal) {
   }
   const selected = reconstructionFrames(frames);
   if (!selected.length) throw new Error('Kamerabileta manglar.');
-  let images = await Promise.all(selected.map(frame => jpeg(frame, .86)));
-  if (images.reduce((sum, blob) => sum + blob.size, 0) > MAX_UPLOAD) images = await Promise.all(selected.map(frame => jpeg(frame, .55)));
-  if (images.reduce((sum, blob) => sum + blob.size, 0) > MAX_UPLOAD) throw new Error('Kamerabileta er for store.');
+  const images = await encodeCapture(selected, MAX_UPLOAD);
   const form = new FormData();
   images.forEach((blob, i) => form.append('images', blob, `view-${i.toString().padStart(2, '0')}.jpg`));
+  if (selected.length > 1) form.set('process_res', String(processResolution(density)));
   update({phase: 'uploading', percent: 5});
   const created = await fetch('/api/reconstruct/jobs', {method: 'POST', body: form, signal});
   const job = await created.json();

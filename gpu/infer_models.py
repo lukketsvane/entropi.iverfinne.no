@@ -30,7 +30,7 @@ def predict_single(images, output):
         "fov": math.degrees(2 * math.atan(height / (2 * focal))), "aspect": width / height}}
 
 
-def predict_multiview(images, output):
+def predict_multiview(images, output, process_res):
     import numpy as np
     import torch
     from depth_anything_3.api import DepthAnything3
@@ -38,7 +38,7 @@ def predict_multiview(images, output):
     model = DepthAnything3.from_pretrained(DA3_MODEL).to("cuda")
     with torch.inference_mode():
         prediction = model.inference(image=[str(path) for path in images], infer_gs=True,
-            process_res=504)
+            process_res=process_res)
         depth = torch.from_numpy(prediction.depth).unsqueeze(-1).to(prediction.gaussians.means)
         save_gaussian_ply(prediction.gaussians, str(output / "scene.ply"), depth,
             prune_by_depth_percent=1.0, prune_border_gs=False)
@@ -61,10 +61,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--process-res", type=int, choices=(336, 420, 504), default=420)
     args = parser.parse_args()
     images = sorted(args.input.glob("*.png"))
-    if not 1 <= len(images) <= 8:
-        raise ValueError("Expected one to eight independent camera views")
+    if not 1 <= len(images) <= 6:
+        raise ValueError("Expected one to six independent camera views")
     args.output.mkdir(parents=True, exist_ok=True)
-    result = predict_single(images, args.output) if len(images) == 1 else predict_multiview(images, args.output)
+    result = predict_single(images, args.output) if len(images) == 1 else predict_multiview(images, args.output, args.process_res)
     (args.output / "metadata.json").write_text(json.dumps(result), encoding="utf-8")
