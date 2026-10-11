@@ -100,6 +100,36 @@
 
 	onMount(() => {
 		void startCamera();
+		const renderPreview = (time: number) => {
+			if (disposed) return;
+			previewAnimation = requestAnimationFrame(renderPreview);
+			if (mode !== 'camera' || time - lastPreview < 85 || !preview || !video || video.readyState < 2) return;
+			lastPreview = time;
+			const ctx = preview.getContext('2d', {willReadFrequently:true});
+			if (!ctx) return;
+			const w=preview.width,h=preview.height,vw=video.videoWidth,vh=video.videoHeight;
+			if (!vw || !vh) return;
+			const crop=Math.min(vw/w,vh/h), sw=w*crop,sh=h*crop;
+			try {
+				ctx.drawImage(video,(vw-sw)/2,(vh-sh)/2,sw,sh,0,0,w,h);
+				const image=ctx.getImageData(0,0,w,h);
+				const source=image.data.slice(), dest=image.data;
+				for(let y=0;y<h;y++) {
+					const offset=Math.round(2.2*Math.sin(y*.058+time*.00052)+1.5*Math.sin(y*.017-time*.0003));
+					for(let x=0;x<w;x++) {
+						const sx=Math.max(0,Math.min(w-1,x+offset));
+						const a=(y*w+sx)*4,b=(y*w+x)*4;
+						const gray=source[a]*.299+source[a+1]*.587+source[a+2]*.114;
+						const grain=((x*17+y*31+Math.floor(time/85)*19)%13)-6;
+						const mono=Math.max(0,Math.min(255,(gray-128)*1.55+118+grain));
+						dest[b]=dest[b+1]=dest[b+2]=mono;
+						dest[b+3]=255;
+					}
+				}
+				ctx.putImageData(image,0,0);
+			} catch { /* Safari may temporarily pause the camera feed. */ }
+		};
+		previewAnimation = requestAnimationFrame(renderPreview);
 		const resume = () => {
 			clearTimeout(resumeTimer);
 			if (document.visibilityState !== 'visible') return;
@@ -117,6 +147,14 @@
 			disposed = true;
 			generation++;
 			clearTimeout(resumeTimer);
+			cancelAnimationFrame(previewAnimation);
+			clearTimeout(holdTimer);
+			clearTimeout(tapTimer);
+			clearInterval(recordingTimer);
+			panoramaWorker?.terminate();
+			rejectPanorama?.(new Error('Avbrote.'));
+			panoramaWorker=null; rejectPanorama=null;
+			frames=[];
 			window.removeEventListener('focus', resume);
 			document.removeEventListener('visibilitychange', resume);
 			estimator.dispose();
