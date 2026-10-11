@@ -9,13 +9,14 @@ import { captureSnapshot } from '../static/pointcloud/panorama.mjs';
 import { imageToPointCloud, pointCloudPLY, pointStride } from '../static/pointcloud/math.mjs';
 import { WIDTH, PRINTER_NAME, buildPrintJob, joinBytes } from '../src/lib/print/px10-protocol.mjs';
 import { PX10Printer } from '../src/lib/print/printer.mjs';
-import { reconstructionFrames } from '../src/lib/pointcloud/reconstruct.mjs';
+import { reconstructionFrames, processResolution } from '../src/lib/pointcloud/reconstruct.mjs';
 
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
 export const harness = {
   beginCapture, endCapture, captureClick, retake, retry, cloudDown, cloudUp,
   get mode(){ return mode; }, get printer(){ return printer; },
+  get announcement(){ return announcement; }, get quality(){ return qualityLevel; },
   get draft(){ return captured; }, get download(){ return plyUrl; },
   mount(elements){ video=elements.video; finder=elements.finder; cloudHost=elements.cloud; photoInput=elements.input; }
 };`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -37,7 +38,8 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   class CameraPrinter extends PX10Printer {
     constructor(){ super({ bluetooth: () => api, storage: () => undefined, delay: 0 }); }
   }
-  let mount, cleanup, viewError, preview, generated = 0, disposedViews = 0, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, gaussianViews = 0, samples = 0;
+  let mount, cleanup, viewError, preview, qualitySlider, generated = 0, disposedViews = 0, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, gaussianViews = 0, samples = 0;
+  const gaussianDensities = [], gaussianDetailLevels = [];
   const track = { stop(){}, readyState: 'live' }, stream = { getTracks: () => [track], getVideoTracks: () => [track] };
   const video = { readyState: 2, videoWidth: 4, videoHeight: 4, srcObject: null, play: async () => {} };
   const document = Object.assign(new EventTarget(), {
@@ -60,14 +62,20 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
       generated++; assert.ok(cloud.count > 0); viewError = onError;
       return { setStyle(){}, setHeadPose(){}, dispose(){ disposedViews++; }, snapshot: () => ({ width: 384, height: 2 }) };
     } },
-    '../lib/pointcloud/reconstruct.mjs': { reconstructionFrames, reconstructGaussian: async frames => {
+    '../lib/pointcloud/reconstruct.mjs': { reconstructionFrames, reconstructGaussian: async (frames, _update, _signal, density) => {
+      gaussianDensities.push(density);
       if (gaussianGate) await gaussianGate;
       if (!gaussian) throw new Error('Shadow unavailable');
       gaussianViews = frames.length;
       return {bytes: new Uint8Array(32), model: 'Apple SHARP', camera: {}, frames: frames.length};
     } },
-    '../lib/pointcloud/gaussian-viewer.mjs': { createGaussianViewer: async (_, bytes, camera, onError) => {
+    '../lib/pointcloud/edge-quality-slider': { attachEdgeQualitySlider: (_surface, options) => {
+      qualitySlider = {level: options.initialLevel, setLevel(level){ this.level = level; }, select(level){ options.onLevel(level); }, dispose(){}};
+      return qualitySlider;
+    } },
+    '../lib/pointcloud/gaussian-viewer.mjs': { createGaussianViewer: async (_, bytes, camera, onError, signal, onAdjust, detailLevel) => {
       generated++; assert.equal(bytes.length, 32); viewError = onError;
+      gaussianDetailLevels.push(detailLevel);
       return {setHeadPose(){}, dispose(){disposedViews++;}, snapshot: () => ({width: 384, height: 2})};
     } },
     '../lib/pointcloud/viewfinder.mjs': { Viewfinder: class { constructor(){ preview = this; } clear(){ this.source = null; } dispose(){} } },
@@ -106,6 +114,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     }
   };
   return { ...exports.harness, harness: exports.harness, tap, requested, writes, paper,
+    selectQuality: level => qualitySlider.select(level), gaussianResolutions: () => gaussianDensities.map(processResolution), gaussianDetailLevels: () => gaussianDetailLevels,
     enableBluetooth: () => { api = bluetooth; }, advancePointer: ms => { pointerTime += ms; }, gaussianViews: () => gaussianViews,
     holdResult: (move = 0) => {
       const down = {...event, clientX: 100, clientY: 200}; exports.harness.cloudDown(down);
@@ -184,6 +193,38 @@ test('Gaussian pan receives independent captured views without flattening them i
   await waitFor(() => camera.writes.length && !camera.harness.printer.busy);
   assert.ok(camera.gaussianViews() >= 3); assert.equal(camera.stitchedFrames(), 0);
   assert.deepEqual(joinBytes(camera.writes), camera.paper);
+});
+
+test('selected on-device level skips Shadow and identifies the local result', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  camera.selectQuality(0);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  assert.deepEqual(camera.gaussianResolutions(), []);
+  assert.equal(camera.generated(), 1);
+  assert.match(camera.harness.announcement, /Lokal djupnebasert punktsky på eininga/);
+  assert.doesNotMatch(camera.harness.announcement, /reserve/);
+});
+
+test('three Shadow levels request increasing detail for held multiview captures', async t => {
+  const camera = fixture(false, {gaussian: true, changingFrames: true}); t.after(camera.cleanup);
+  for (const level of [1, 2, 3]) {
+    camera.selectQuality(level);
+    assert.equal(camera.harness.quality, level);
+    camera.begin(); await waitFor(() => camera.harness.mode === 'recording'); camera.end();
+    await waitFor(() => camera.harness.mode === 'done');
+    assert.ok(camera.gaussianViews() >= 2);
+    if (level < 3) await camera.harness.retake();
+  }
+  assert.deepEqual(camera.gaussianResolutions(), [336, 420, 504]);
+  assert.deepEqual(camera.gaussianDetailLevels(), [1, 2, 3]);
+});
+
+test('Shadow failure identifies on-device reconstruction as a reserve', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  camera.selectQuality(1);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  assert.deepEqual(camera.gaussianResolutions(), [336]);
+  assert.match(camera.harness.announcement, /reserve etter at Shadow ikkje svara/);
 });
 
 test('shake while Gaussian inference is pending prevents a late model and print from returning', async t => {

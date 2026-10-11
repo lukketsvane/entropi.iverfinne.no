@@ -3,6 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {CanvasPointCloudViewer} from './canvas-viewer.mjs';
 import {HeadParallax} from './head-parallax.mjs';
 import {attachViewerGestures, noAdjust, progressiveIndices} from './viewer-gestures.ts';
+import {rotateTouchCamera, transformTouchCamera} from './touch-camera.ts';
+import {nearestC64} from './c64-palette.ts';
 
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 
@@ -38,7 +40,7 @@ export class PointCloudViewer {
     this.reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.085;
+    this.controls.dampingFactor = 0.12;
     this.controls.rotateSpeed = 0.55;
     this.controls.zoomSpeed = 0.7;
     this.controls.enablePan = true;
@@ -46,8 +48,9 @@ export class PointCloudViewer {
     this.controls.maxDistance = cloud.radius * 1000;
     this.camera.far = Math.max(100, this.controls.maxDistance + cloud.radius * 2);
     this.camera.updateProjectionMatrix();
-    this.controls.touches.ONE = THREE.TOUCH.ROTATE;
-    this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
+    this.controls.zoomToCursor = true;
+    this.controls.touches.ONE = null;
+    this.controls.touches.TWO = null;
     this.controls.autoRotate = !this.reducedMotion;
     this.controls.autoRotateSpeed = 0.26;
 
@@ -57,8 +60,8 @@ export class PointCloudViewer {
     const colors = new Float32Array(cloud.colors.length);
     const color = new THREE.Color();
     for (let i = 0; i < cloud.count; i++) {
-      color.setRGB(cloud.colors[i * 3] / 255, cloud.colors[i * 3 + 1] / 255,
-        cloud.colors[i * 3 + 2] / 255, THREE.SRGBColorSpace);
+      const [red, green, blue] = nearestC64(cloud.colors[i * 3], cloud.colors[i * 3 + 1], cloud.colors[i * 3 + 2]);
+      color.setRGB(red / 255, green / 255, blue / 255, THREE.SRGBColorSpace);
       color.toArray(colors, i * 3);
     }
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -68,7 +71,7 @@ export class PointCloudViewer {
       uniforms: {
         uHeight: { value: 900 },
         uSize: { value: cloud.radius * 0.0095 },
-        uOpacity: { value: 1 },
+        uDefinition: { value: 0.5 },
         uMode: { value: 0 },
         uRadius: { value: Math.max(0.01, cloud.radius) }
       },
@@ -92,13 +95,13 @@ export class PointCloudViewer {
       fragmentShader: [
         'precision mediump float;',
         'uniform float uMode;',
-        'uniform float uOpacity;',
+        'uniform float uDefinition;',
         'varying vec3 vColor;',
         'varying vec3 vPosition;',
         'varying float vDepth;',
         'void main() {',
         '  float d = length(gl_PointCoord - vec2(0.5));',
-        '  float a = 1.0 - smoothstep(0.35, 0.5, d);',
+        '  float a = 1.0 - smoothstep(mix(0.26, 0.46, uDefinition), mix(0.5, 0.47, uDefinition), d);',
         '  if (a < 0.015) discard;',
         '  vec3 silver = vec3(0.77, 0.84, 0.88) * (0.65 + vDepth * 0.45);',
         '  vec3 nearTone = vec3(0.86, 0.93, 0.96);',
@@ -113,7 +116,7 @@ export class PointCloudViewer {
         '    vec3 phosphor = step(vec3(threshold), pow(clamp(vColor, 0.0, 1.0), vec3(0.67)));',
         '    rgb = phosphor * vec3(1.0, 0.94, 1.0);',
         '  }',
-        '  gl_FragColor = vec4(rgb, a * 0.97 * uOpacity);',
+        '  gl_FragColor = vec4(rgb, a * 0.97);',
         '  #include <colorspace_fragment>',
         '}'
       ].join('\n'),
@@ -128,20 +131,24 @@ export class PointCloudViewer {
     this.scene.add(this.points);
     this.gestures = attachViewerGestures(this.renderer.domElement, {
       onDensity: value => { geometry.setDrawRange(0, Math.max(1, Math.round(cloud.count * value))); this.dirty = true; },
-      onSize: value => this.setPointSize(value),
-      onOpacity: value => { material.uniforms.uOpacity.value = value; this.dirty = true; },
-      onPan: (x, y) => {
-        const distance = this.camera.position.distanceTo(this.controls.target);
-        const scale = 2 * distance * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) / Math.max(1, this.renderer.domElement.clientHeight);
-        const shift = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).multiplyScalar(-x * scale);
-        shift.addScaledVector(new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion), y * scale);
-        this.camera.position.add(shift); this.controls.target.add(shift); this.controls.update(); this.dirty = true;
+      onDefinition: value => {
+        this.setPointSize(4 ** (1 - 2 * value));
+        material.uniforms.uDefinition.value = value;
+        this.dirty = true;
       },
-      onPinch: scale => {
-        const offset = this.camera.position.clone().sub(this.controls.target);
-        offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale ** 2, this.controls.minDistance, this.controls.maxDistance) / offset.length());
-        this.camera.position.copy(this.controls.target).add(offset);
-        this.controls.update(); this.dirty = true;
+      onRotate: (x, y) => {
+        rotateTouchCamera(this.camera, this.controls, x, y, this.renderer.domElement.clientHeight);
+        this.dirty = true;
+      },
+      onTransform: (x, y, scale, focusX, focusY) => {
+        transformTouchCamera(this.camera, this.controls, x, y, scale, focusX, focusY, this.renderer.domElement.clientWidth, this.renderer.domElement.clientHeight);
+        this.dirty = true;
+      },
+      onTouch: active => {
+        this.touching = active;
+        if (active) { this.parallax.position.set(0, 0, 0); this.parallax.setPose(null); }
+        else this.parallax.setPose(this.lastPose || null);
+        this.dirty = true;
       },
       onAdjust
     });
@@ -189,7 +196,8 @@ export class PointCloudViewer {
 
   /** @param {import('./head-parallax.mjs').HeadPose|null} pose */
   setHeadPose(pose) {
-    this.parallax.setPose(pose);
+    this.lastPose = pose;
+    if (!this.touching) this.parallax.setPose(pose);
     if(pose)this.controls.autoRotate=false;
     this.dirty=true;
   }

@@ -1,6 +1,7 @@
 /** Genuine XYZ projection for browsers without a WebGL2 context. */
 import {HeadParallax} from './head-parallax.mjs';
 import {attachViewerGestures, noAdjust, progressiveIndices} from './viewer-gestures.ts';
+import {nearestC64} from './c64-palette.ts';
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 export class CanvasPointCloudViewer {
   /** @param {HTMLElement} host @param {PointCloud} cloud */
@@ -9,7 +10,7 @@ export class CanvasPointCloudViewer {
     const context=this.canvas.getContext('2d',{alpha:true});
     if(!context)throw new Error('Kunne ikkje vise punktskyen.');
     this.context=context;host.replaceChildren(this.canvas);this.canvas.style.touchAction='none';
-    this.disposed=false;this.dirty=true;this.auto=true;this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.pointSize=1;this.opacity=1;
+    this.disposed=false;this.dirty=true;this.auto=true;this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.pointSize=1;this.definition=.5;
     this.style='mono';
     this.parallax=new HeadParallax();
     this.reducedMotion=globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -18,14 +19,30 @@ export class CanvasPointCloudViewer {
     const stride=Math.max(1,Math.ceil(cloud.count/21000));
     const baseIndices=Array.from({length:Math.ceil(cloud.count/stride)},(_,i)=>i*stride);
     this.indices=progressiveIndices(baseIndices.length).map(i=>baseIndices[i]);
+    this.paletteColors=new Uint8Array(this.indices.length*3);
+    for(let i=0;i<this.indices.length;i++){
+      const source=this.indices[i]*3;
+      const color=nearestC64(cloud.colors[source],cloud.colors[source+1],cloud.colors[source+2]);
+      this.paletteColors.set(color,i*3);
+    }
     this.projected=new Float32Array(this.indices.length*3);
     this.order=this.indices.map((_,i)=>i);
     this.gestures=attachViewerGestures(this.canvas,{
       onDensity:value=>{this.order=Array.from({length:Math.max(1,Math.round(this.indices.length*value))},(_,i)=>i);this.dirty=true;},
-      onSize:value=>this.setPointSize(value),
-      onOpacity:value=>{this.opacity=value;this.dirty=true;},
-      onPan:(x,y)=>{this.panX+=x;this.panY+=y;this.dirty=true;},
-      onPinch:scale=>{this.zoom=Math.max(.005,Math.min(4,this.zoom*scale**2));this.dirty=true;},
+      onDefinition:value=>{this.definition=value;this.setPointSize(4**(1-2*value));},
+      onRotate:(x,y)=>{this.yaw+=x*.006;this.pitch=Math.max(-1.4,Math.min(1.4,this.pitch+y*.006));this.dirty=true;},
+      onTransform:(x,y,scale,focusX,focusY)=>{
+        const next=Math.max(.005,Math.min(4,this.zoom*scale)),ratio=next/this.zoom;
+        this.panX+=x+(1-ratio)*(focusX-this.canvas.clientWidth/2-this.panX);
+        this.panY+=y+(1-ratio)*(focusY-this.canvas.clientHeight/2-this.panY);
+        this.zoom=next;this.dirty=true;
+      },
+      onTouch:active=>{
+        this.touching=active;this.auto=false;
+        if(active){this.parallax.position.set(0,0,0);this.parallax.setPose(null);}
+        else this.parallax.setPose(this.lastPose||null);
+        this.dirty=true;
+      },
       onAdjust
     });
     this.resize=()=>{
@@ -68,7 +85,8 @@ export class CanvasPointCloudViewer {
     const cy=Math.cos(this.yaw),sy=Math.sin(this.yaw),cp=Math.cos(this.pitch),sp=Math.sin(this.pitch);
     const radius=Math.max(.01,this.cloud.radius),distance=radius*2.8/this.zoom,focal=Math.min(width,height)*1.08;
     const eye=this.parallax.offsets(distance,width/height,time,this.reducedMotion);
-    ctx.clearRect(0,0,width,height);ctx.globalAlpha=this.opacity;
+    ctx.clearRect(0,0,width,height);
+    ctx.globalAlpha=Math.min(1,.6+.8*this.definition);
     for(let i=0;i<this.order.length;i++) {
       const at=this.indices[i]*3,x=positions[at],y=positions[at+1],z=positions[at+2];
       const rx=x*cy+z*sy,rz=-x*sy+z*cy,ry=y*cp-rz*sp,depth=distance+eye.z-(y*sp+rz*cp);
@@ -88,14 +106,17 @@ export class CanvasPointCloudViewer {
         const phosphor=[0,1,2].map(c=>Math.pow(colors[at+c]/255,.67)>=threshold?255:0);
         ctx.fillStyle=`rgb(${phosphor[0]},${Math.round(phosphor[1]*.94)},${phosphor[2]})`;
       }
-      else if(this.style==='color')ctx.fillStyle=`rgb(${colors[at]},${colors[at+1]},${colors[at+2]})`;
+      else if(this.style==='color'){
+        const c=i*3;
+        ctx.fillStyle=`rgb(${this.paletteColors[c]},${this.paletteColors[c+1]},${this.paletteColors[c+2]})`;
+      }
       else {const gray=Math.round(92+(colors[at]*.299+colors[at+1]*.587+colors[at+2]*.114)*.64);ctx.fillStyle=`rgb(${gray},${gray},${gray})`;}
       const size=Math.max(.25,Math.min(24,radius*.0087*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
     }
     ctx.globalAlpha=1;
   }
   /** @param {import('./head-parallax.mjs').HeadPose|null} pose */
-  setHeadPose(pose){this.parallax.setPose(pose);if(pose)this.auto=false;this.dirty=true;}
+  setHeadPose(pose){this.lastPose=pose;if(!this.touching)this.parallax.setPose(pose);if(pose)this.auto=false;this.dirty=true;}
   /** @param {'color'|'silver'|'depth'|'mono'|'crt'} style */ setStyle(style){this.style=style;this.dirty=true;}
   /** @param {number} size */ setPointSize(size){this.pointSize=size;this.dirty=true;}
   reset(){this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.dirty=true;}
