@@ -6,6 +6,8 @@
 	import { Viewfinder } from '../lib/pointcloud/viewfinder.mjs';
 	import { FrameRecorder } from '../lib/pointcloud/recorder.mjs';
 	import { HeadTracker } from '../lib/pointcloud/head-tracker';
+	import { PX10Printer } from '../lib/print/printer.mjs';
+	import { cloudPrintJob } from '../lib/print/cloud-raster.mjs';
 	import { imageToPointCloud, pointCloudPLY, pointStride } from '../../static/pointcloud/math.mjs';
 	import { estimateImageDepth } from '../../static/pointcloud/tiles.mjs';
 	import { captureSnapshot } from '../../static/pointcloud/panorama.mjs';
@@ -21,6 +23,11 @@
 	let preview: Viewfinder | null = null;
 	let viewer: ReturnType<typeof createPointCloudViewer> | null = null;
 	let tracker: HeadTracker | null = null;
+	let printer: PX10Printer | null = null;
+	let printSession = '';
+	let captureJobId = '';
+	let suppressCaptureClick = false;
+	let printerAnnouncement = $state('');
 	let trackingFailed = false;
 	const estimator = new DepthEstimator();
 	let mode = $state<'camera' | 'recording' | 'working' | 'done' | 'error'>('camera');
@@ -77,8 +84,13 @@
 		if (preview) { preview.source = canvas; preview.active = true; }
 	}
 	function openCapture() {
-		if (mode !== 'camera') return;
+		if (mode !== 'camera' || printer?.choosing || choosePrinter()) return;
 		stopCamera(); preview?.clear(); photoInput?.click();
+	}
+	function choosePrinter() {
+		if (!printer?.needsChoice) return false;
+		void printer.choose();
+		return true;
 	}
 	async function startCamera() {
 		if (disposed || document.hidden || mode !== 'camera' || stream || !video || !navigator.mediaDevices?.getUserMedia) return;
@@ -113,6 +125,8 @@
 	});
 	function beginCapture(event: PointerEvent) {
 		if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0) || mode !== 'camera') return;
+		if (printer?.choosing) return;
+		if (choosePrinter()) { event.preventDefault(); suppressCaptureClick = true; return; }
 		if (!video || video.readyState < 2 || !video.videoWidth) return;
 		event.preventDefault();
 		capturePointer = event.pointerId;
@@ -127,7 +141,10 @@
 		if (event.pointerId === capturePointer) recorder.abort();
 	}
 	function captureClick(event: MouseEvent) {
+		if (suppressCaptureClick) { suppressCaptureClick = false; return; }
+		if (printer?.choosing) return;
 		if (mode !== 'camera') return;
+		if (choosePrinter()) return;
 		if (!video || video.readyState < 2 || !video.videoWidth) { openCapture(); return; }
 		// Mouse/touch already finish on release; keyboard and assistive clicks still capture.
 		if (event.detail === 0) void finishCapture([pixelsFor(video, video.videoWidth, video.videoHeight)]);
@@ -161,6 +178,7 @@
 		if (!frames.length) { mode = 'camera'; openCapture(); return; }
 		try {
 			clearResult(); captured = null; progress = null; mode = 'working';
+			captureJobId = `${printSession}:${id}`;
 			showPixels(frames[0]); stopCamera();
 			announcement = frames.length > 1 ? 'Set saman overlappande bilete.' : 'Lagar punktsky.';
 			const fallback = frames.length > 1 ? { ...captureSnapshot(frames[0]), data: new Uint8ClampedArray(frames[0].data) } : frames[0];
@@ -206,6 +224,11 @@
 			// Preserve captured RGB in PLY. The limited CRT palette is display-only.
 			plyUrl = URL.createObjectURL(new Blob([pointCloudPLY(cloud)], { type: 'application/octet-stream' }));
 			announcement = `${pixels.registeredFrames ?? 1} av ${pixels.inputFrames ?? 1} bilete registrerte. Punktsky klar. Flytt hovudet for å sjå djupna. Dra for å rotere, bruk to fingrar for å zoome. Dobbelttrykk for eit nytt bilete. Djupna er estimert.`;
+			// Printing is independent of viewing: no dialog or failure can replace the cloud.
+			if (printer?.device) {
+				try { printer.enqueue(captureJobId, cloudPrintJob(viewer.snapshot())); }
+				catch { printerAnnouncement = 'Punktskyen er klar, men utskrifta kunne ikkje klargjerast.'; }
+			}
 			startTracking();
 		} catch (error) { fail(error, id); }
 	}
@@ -250,6 +273,7 @@
 	}
 	async function retake() {
 		generation++; recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); captured = null;
+		captureJobId = '';
 		progress = null; lastTap = null; mode = 'camera';
 		announcement = 'Trykk for eitt bilete. Hald inne for fleire bilete.';
 		preview?.clear(); if (preview) preview.active = true;
@@ -274,15 +298,32 @@
 		if (event.key === 'Escape') void retake();
 	}
 	onMount(() => {
+		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
+		printer = new PX10Printer();
+		const printStatus = (event: Event) => {
+			const state = (event as CustomEvent).detail.state as string;
+			printerAnnouncement = ({ choosing: 'Vel PX10 i Bluetooth-dialogen.', connecting: 'Koplar til skrivaren.',
+				connected: 'Skrivaren er klar. Trykk for bilete, hald inne for panorama.', reconnecting: 'Koplar til skrivaren att.',
+				sending: 'Skriv ut punktskyen.', sent: 'Punktskyen er sendt til skrivaren.',
+				cancelled: 'Kameraet kan brukast utan utskrift.', failed: 'Utskrifta stoppa. Kameraet og punktskyen er framleis tilgjengelege.' } as Record<string, string>)[state] ?? '';
+		};
+		printer.addEventListener('status', printStatus);
+		const restorePrinter = () => { if (!document.hidden) void printer?.start(); };
+		// Listen for late Safari-extension injection without loading a third-party SDK.
+		window.addEventListener('beacio:ready', restorePrinter);
+		window.addEventListener('beacio:extension:ready', restorePrinter);
+		const printerChecks = [0, 300, 1200, 3000].map(delay => setTimeout(restorePrinter, delay));
 		try { preview = new Viewfinder(finder); } catch { announcement = 'Kamerasøkjaren kunne ikkje startast. Trykk for å velje eit bilete.'; }
 		void startCamera();
 		const suspend = () => {
 			clearTimeout(resumeTimer); recorder.abort(); stopTracking(); stopCamera();
+			printer?.suspend();
 			if (mode === 'camera') preview?.clear();
 		};
 		const resume = () => {
 			clearTimeout(resumeTimer);
 			if (document.visibilityState !== 'visible') { suspend(); return; }
+			restorePrinter();
 			if (updated.current && mode === 'camera') { location.reload(); return; }
 			resumeTimer = setTimeout(() => {
 				if (mode === 'camera') {
@@ -298,6 +339,8 @@
 			disposed = true; generation++; clearTimeout(resumeTimer); recorder.abort();
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
+			window.removeEventListener('beacio:ready', restorePrinter); window.removeEventListener('beacio:extension:ready', restorePrinter);
+			printerChecks.forEach(clearTimeout); printer?.removeEventListener('status', printStatus); printer?.dispose(); printer = null;
 			estimator.dispose(); stopPanorama(); stopCamera(); preview?.dispose(); clearResult(); captured = null;
 		};
 	});
@@ -323,7 +366,7 @@
 		{/if}
 	</div>
 	{#if mode === 'camera' || mode === 'recording'}
-		<button class="capture-plane" type="button" aria-label="Ta bilete og lag 3D-punktsky. Hald inne for panorama."
+		<button class="capture-plane" type="button" aria-label="Ta bilete og lag 3D-punktsky. Hald inne for panorama. Første trykk vel PX10 når Bluetooth er tilgjengeleg."
 			onpointerdown={beginCapture} onpointerup={endCapture} onpointercancel={cancelCapture} onlostpointercapture={cancelCapture} oncontextmenu={event => event.preventDefault()} onclick={captureClick}></button>
 		<button class="access-control" type="button" aria-label="Vel bilete frå telefonen" onclick={openCapture}><i class="plus" aria-hidden="true"></i></button>
 	{:else if mode === 'working'}
@@ -340,4 +383,5 @@
 	{/if}
 	<input bind:this={photoInput} type="file" accept="image/*" multiple onchange={capture} oncancel={() => void startCamera()} tabindex="-1" aria-label="Kamerabilete" />
 	<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
+	<span class="sr-only" role="status" aria-live="polite">{printerAnnouncement}</span>
 </main>

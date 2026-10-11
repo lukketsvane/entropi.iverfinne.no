@@ -88,6 +88,16 @@ export class CanvasPointCloudViewer {
   /** @param {'color'|'silver'|'depth'|'mono'|'crt'} style */ setStyle(style){this.style=style;this.dirty=true;}
   /** @param {number} size */ setPointSize(size){this.pointSize=size;this.dirty=true;}
   reset(){this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.dirty=true;}
+  /** Monochrome copy for the printer, preserving the on-screen colour treatment. */
+  snapshot(){
+    const canvas=document.createElement('canvas');canvas.width=384;
+    canvas.height=Math.max(1,Math.min(1024,Math.round(384*this.canvas.height/this.canvas.width)));
+    const context=canvas.getContext('2d');if(!context)throw new Error('Kunne ikkje lese punktskyen.');
+    const style=this.style;
+    try{this.style='mono';this.render();context.drawImage(this.canvas,0,0,canvas.width,canvas.height);}
+    finally{this.style=style;this.render();this.dirty=true;}
+    return canvas;
+  }
   dispose(){
     if(this.disposed)return;this.disposed=true;cancelAnimationFrame(this.animation);this.observer.disconnect();this.pointers.clear();
     this.canvas.removeEventListener('pointerdown',this.down);this.canvas.removeEventListener('pointermove',this.move);

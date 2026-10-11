@@ -195,6 +195,26 @@ export class PointCloudViewer {
     this.dirty = true;
   }
 
+  /** Monochrome copy for paper; capture synchronously before WebGL clears its buffer. */
+  snapshot() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 384;
+    canvas.height = Math.max(1, Math.min(1024, Math.round(384 * this.host.clientHeight / Math.max(1, this.host.clientWidth))));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Kunne ikkje lese punktskyen.');
+    const mode = this.points.material.uniforms.uMode.value;
+    try {
+      this.points.material.uniforms.uMode.value = 3;
+      this.renderer.render(this.scene, this.camera);
+      context.drawImage(this.renderer.domElement, 0, 0, canvas.width, canvas.height);
+    } finally {
+      this.points.material.uniforms.uMode.value = mode;
+      this.renderer.render(this.scene, this.camera);
+      this.dirty = true;
+    }
+    return canvas;
+  }
+
   dispose() {
     if (this.disposed) return;
     this.disposed = true;

@@ -24,6 +24,16 @@ MediaPipe Tasks Vision 0.10.32 og BlazeFace-modellen køyrer på eininga i ein e
 
 Begge kameraa blir stoppa når sida går i bakgrunnen eller ein tek nytt bilete. Avslått eller utilgjengeleg frontkamera gir vanleg berøringsstyring utan ein ekstra dialog i appen. Nettlesaren sine eigne kameraløyve og kameraindikatorar gjeld framleis. Testane kontrollerer perspektivet, kameraopprydding, avbrot, ansiktstap og nettverksvernet; fysisk iPhone er ikkje testa.
 
+### Automatisk PX10-utskrift i Safari
+
+På iPhone kan beacio-utvidinga leggje til Web Bluetooth i Safari. Ho må vere aktivert og ha tilgang til `entropi.iverfinne.no`. Entropi les API-et når det blir brukt og lyttar etter sein utvidingsaktivering; ingen SDK, ekstra installasjonsbanner, synleg tekst, ikon eller panel er lagt til. Første kameratrykk vel `Luxorp.PX10-DAAF` i systemdialogen; neste trykk tek eit bilete. Dersom dialogen blir avbroten, kan kameraet framleis brukast utan utskrift den økta.
+
+Tidlegare godkjende einingar blir henta med `getDevices()`. Berre ID-en til den valde PX10 blir lagra lokalt. Sida koplar stille til att med avgrensa ventetid og aukande pausar når skrivaren kjem tilbake, og prøver att når Safari får fokus. Utskriftskøen ligg berre i minnet, held høgst fire resultat og slettar jobbar eldre enn 90 sekund. Etter at punktskyen er klar, blir eit monokromt bilete av dei faktiske 3D-punkta automatisk sendt til skrivaren. Svart skjermbakgrunn blir kvitt papir; tomrom over og under motivet blir klipt bort. Fleirbileteopptak skriv ut eitt samla resultat.
+
+Transporten bruker dei observerte AE30/AE01/AE02-kanalane, med AE3A/AE3B/AE3C som reserve. Tiny/d1-pakkar frå TiMini-Print v0.9 blir sende i konservative 20-byte stykke, med pause/resume frå skrivaren. Protokollen er kontrollert mot upstream sine komplette referansebyte; lisens og merknad er med under `/px10/`. Ei utskrift som har byrja å bli send, blir aldri automatisk gjenteken ved feil eller ved ny berekning av same opptak. Bluetooth-feil påverkar ikkje kameraet eller 3D-visinga.
+
+Safari utan utvidinga held fram som kamera utan utskrift. Utvidingsstøtte i ein eigen iOS-heimskjermapp og fysisk PX10-utskrift er ikkje stadfesta her. iOS kan suspendere sida i bakgrunnen; denne løysinga ber ikkje om varslingar eller ekstra bakgrunnsløyve og lovar ikkje at Bluetooth aldri fell ut. `sent` tyder at alle byte er leverte til BLE-transporten, ikkje at papir er observert.
+
 ## TripoSplat på GPU
 
 Den eksisterande TripoSplat-flyten er bevart på `/triposplat`. Her blir biletet sendt via `/triposplat/api/jobs` til GPU-tenaren, og resultatet vert vist som ei interaktiv punktsky frå Gaussian-splat-fila. Dette **krev ein køyrande TripoSplat-backend** og miljøvariablane `TRIPOSPLAT_BACKEND_URL` og `TRIPOSPLAT_BACKEND_TOKEN` på Vercel. Original `.splat` kan lastast ned. Backend-rutene, diagnostikken og visaren blir haldne uendra.
