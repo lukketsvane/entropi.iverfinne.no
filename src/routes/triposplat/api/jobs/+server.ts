@@ -1,4 +1,8 @@
 import { json } from '@sveltejs/kit';
+import type { Config } from '@sveltejs/adapter-vercel';
+
+// GPU proxy requests may exceed Vercel's 10-second default.
+export const config: Config = { split: true, maxDuration: 60 };
 import type { RequestHandler } from './$types';
 import { IMAGE_TYPES, MAX_UPLOAD_BYTES } from '../../../../lib/triposplat';
 import { backendRequest } from '../../../../lib/server/triposplat';
@@ -25,7 +29,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const form = new FormData();
 	form.set('image', image, image.name);
 	try {
-		const pending = backendRequest('/api/jobs', { method: 'POST', body: form, signal: request.signal });
+		const pending = backendRequest('/api/jobs', { method: 'POST', body: form, signal: request.signal }, 45_000);
 		if (!pending) return json({ error: 'Generation service is not configured.' }, { status: 503 });
 		const response = await pending;
 		const data = await response.json().catch(() => null);
