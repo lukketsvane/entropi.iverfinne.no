@@ -177,7 +177,7 @@
 			const cloud = imageToPointCloud({ rgba: pixels.data, width: pixels.width, height: pixels.height,
 				depth: prediction.depth, depthWidth: prediction.width, depthHeight: prediction.height,
 				stride: pointStride(pixels.width, pixels.height), focalEstimate: pixels.focalEstimate });
-			mode = 'done'; if (preview) { preview.dispose(); preview = null; }
+			mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
 			await tick();
 			if (disposed || id !== generation || !cloudHost) return;
 			viewer = new PointCloudViewer(cloudHost, cloud, error => fail(error, id));
@@ -225,12 +225,8 @@
 		generation++; recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); captured = null;
 		progress = null; lastTap = null; mode = 'camera';
 		announcement = 'Trykk for eitt bilete. Hald inne for fleire bilete.';
-		await tick();
-		if (!preview && finder) {
-			try { preview = new Viewfinder(finder); }
-			catch { announcement = 'Kamerasøkjaren kunne ikkje startast.'; }
-		} else if (preview) { preview.source = null; preview.active = true; }
-		void startCamera();
+		if (preview) { preview.source = null; preview.active = true; }
+		await tick(); void startCamera();
 	}
 	function retry() {
 		if (!captured) { void retake(); return; }
