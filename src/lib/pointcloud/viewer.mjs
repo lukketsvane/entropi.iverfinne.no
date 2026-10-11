@@ -100,6 +100,7 @@ export class PointCloudViewer {
     this.points.frustumCulled = false;
     this.scene.add(this.points);
 
+    /** @param {Event} event */
     this.onLost = event => {
       event.preventDefault();
       if (!this.disposed) onError(new Error('3D-visinga stoppa. Prøv punktskyen på nytt.'));
@@ -125,6 +126,7 @@ export class PointCloudViewer {
 
     let previous = 0;
     this.animation = 0;
+    /** @param {number} time */
     const frame = time => {
       if (this.disposed) return;
       this.animation = requestAnimationFrame(frame);
