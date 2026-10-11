@@ -4,15 +4,25 @@ Eit kamera som måler uorden. På skjermen er det berre biletet: ingen tekst, in
 
 **https://entropi.iverfinne.no**
 
-## Framsida: kamera til 3D-punktsky
+## Framsida: kamera til lokal 3D-punktsky
 
-Framsida ( `/` ) er TripoSplat-kameraet. På iPhone tek eitt trykk på lukkaren eit stillbilete direkte frå den synlege kameravideoen; dersom straumen ikkje er tilgjengeleg, opnar den vanlege kameraveljaren. Biletet vert skalert til maksimalt 1536 piksel og 4 MB og sendt via `/triposplat/api/jobs` til GPU-tenaren. Appen ventar på at rekonstruksjonen vert ferdig.
+Opne `/` på iPhone og gje kameraet løyve. Eitt trykk på lukkaren tek biletet direkte frå den synlege kameravideoen og viser automatisk ei farga 3D-punktsky. Bileteveljaren oppe til venstre kan opne eit bilete frå telefonen; utan ein kamerastraum kan ein òg bruke den vanlege iOS-kameraveljaren.
 
-Resultatet vert vist som ei **interaktiv 3D-punktsky**, med fargane og 3D-posisjonane frå Gaussian-splat-fila. Ein kan rotere med éin finger og knipe for å zoome. Den originale `.splat`-fila kan framleis lastast ned. Visaren les 32-byte `.splat`-postar, nyttar opptil 220 000 punkt på mobilen, og viser ikkje oppdikta geometri dersom modellen manglar. Dette er rekonstruksjon frå eitt bilete, ikkje ein metrisk 3D-skann.
+Dra med éin finger for å rotere, bruk to fingrar for zoom og panorering. Ikona gir nytt bilete, tilbakestilt vising, nedlasting av XYZ/RGB-punkt som `.ply`, og deling av det originale kamerabiletet. Ein kan avbryte berekninga eller prøve det same biletet igjen dersom nedlasting eller 3D-vising feilar.
 
-SvelteKit-rutene for opplasting, status og resultat er proxiar til GPU-tenaren. **Krev ein køyrande TripoSplat-backend** og Vercel-miljøvariablane `TRIPOSPLAT_BACKEND_URL` og `TRIPOSPLAT_BACKEND_TOKEN`. Nettstaden kan byggje og vise kameraet utan tenaren, men 3D-generering vil då feile med ei melding. Kameraeksperimenta som er dokumenterte nedanfor ligg under `/camera`.
+**Biletet blir handsama lokalt.** Depth Anything V2 Small estimerer relativ invers djupn i ein modul-worker med ONNX Runtime Web 1.30.0 og éin WASM-tråd. Biletet vert projisert til 3D med desse djupneverdiane og dei originale fargane, med opptil 42 000 punkt. Dette er synlege flater med estimert djupn, ikkje ein metrisk skann eller ein komplett modell av baksida. Lysstyrke blir ikkje brukt som erstatning for djupn ved feil.
 
+Første berekning lastar ned den offentlege, versjonsfesta ONNX-modellen (27,3 MB frå Hugging Face) og WASM-runtime (14,2 MB frå jsDelivr). Begge blir kontrollerte mot SHA-256 i `static/pointcloud/models/manifest.json` før bruk og blir mellomlagra lokalt dersom lagringsplass er tilgjengeleg. Ingen bilete blir lasta opp av framsida. Inndata beheld retninga og sideforholdet, med tensorstorleikar delelege på 14 og maksimalt 420 piksel. Kameraet og GPU-visinga blir frigjorde når ein tek nytt bilete eller forlèt sida.
 
+## TripoSplat på GPU
+
+Den eksisterande TripoSplat-flyten er bevart på `/triposplat`. Her blir biletet sendt via `/triposplat/api/jobs` til GPU-tenaren, og resultatet vert vist som ei interaktiv punktsky frå Gaussian-splat-fila. Dette **krev ein køyrande TripoSplat-backend** og miljøvariablane `TRIPOSPLAT_BACKEND_URL` og `TRIPOSPLAT_BACKEND_TOKEN` på Vercel. Original `.splat` kan lastast ned. Backend-rutene, diagnostikken og visaren blir haldne uendra.
+
+Kameraeksperimenta som er dokumenterte nedanfor ligg under `/camera`.
+
+## Kontroll av punktskyen
+
+`npm test` kontrollerer geometri, RGB, PLY, punktbudsjett, modellkontroll, cache, feilhandsaming og avbrot. `npm run check:pointcloud` lastar ned offentlege kontrollkopiar av dei versjonsfesta modellfilene og køyrer den faktiske browser-workeren med WASM i ein Node-worker for ståande, liggjande og kvadratisk inndata. Filene ligg i den ignorerte `.pointcloud-cache/`. Dette verifiserer modellberekninga, ikkje kamera eller berøringsstyring på ein fysisk iPhone. Køyr òg `npm run check` og `npm run build`.
 
 ## Bruk på iPhone
 

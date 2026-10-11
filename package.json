@@ -9,17 +9,23 @@
 		"preview": "vite preview --host",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"test": "node --test tests/*.test.mjs",
+		"check:pointcloud": "python3 scripts/prepare-point-cloud.py && node scripts/check-point-cloud.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-vercel": "^7.0.0",
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@types/node": "^26.6.4",
+		"@types/three": "^0.186.0",
 		"svelte": "^5.57.1",
 		"svelte-check": "^4.6.0",
 		"typescript": "^6.0.3",
 		"vite": "^8.3.0"
 	},
-	"description": "Eit kamera som måler uorden."
+	"description": "Eit kamera som måler uorden.",
+	"dependencies": {
+		"three": "^0.186.1"
+	}
 }

@@ -1,7 +1,8 @@
-/* Skall-cache for heimskjerm-appen. Kameraet treng ikkje nett, så etter to opningar startar alt utan dekning.
+/* Skall-cache for heimskjerm-appen. Punktskyen treng nett til første modellnedlasting.
+ * Verifiserte modellar har sin eigen cache; ikkje slett han når appskallet blir oppdatert.
  * HTML: nett først (ny deploy syner med ein gong), cache som reserve.
  * Alt anna frå same opphav: cache først, oppdater i bakgrunnen. */
-const V = 'entropi-v2';
+const V = 'entropi-v3-pointcloud';
 
 self.addEventListener('install', (e) => {
 	e.waitUntil(
@@ -19,7 +20,7 @@ self.addEventListener('activate', (e) => {
 	e.waitUntil(
 		caches
 			.keys()
-			.then((ks) => Promise.all(ks.filter((k) => k !== V).map((k) => caches.delete(k))))
+			.then((ks) => Promise.all(ks.filter((k) => k.startsWith('entropi-v') && k !== V).map((k) => caches.delete(k))))
 			.then(() => self.clients.claim())
 	);
 });
