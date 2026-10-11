@@ -125,8 +125,11 @@
 			}
 			rejectPanorama = error => finish(error);
 			worker.onmessage = ({ data }) => {
-				if (data.type === 'error') finish(new Error(data.message));
-				else finish(null, { ...data, data: new Uint8ClampedArray(data.data) });
+				if (data.type === 'error' || data.error) finish(new Error(data.message || data.error));
+				else if (data.type !== 'result' || !Number.isInteger(data.width) || !Number.isInteger(data.height)
+					|| !(data.data instanceof ArrayBuffer) || data.data.byteLength !== data.width * data.height * 4) {
+					finish(new Error('Panoramaet gav eit ugyldig resultat.'));
+				} else finish(null, { ...data, data: new Uint8ClampedArray(data.data) });
 			};
 			worker.onerror = () => finish(new Error('Kunne ikkje setje saman bileta.'));
 			const input = frames.map(frame => ({ width: frame.width, height: frame.height, data: frame.data.buffer }));
@@ -140,7 +143,20 @@
 			clearResult(); captured = null; progress = null; mode = 'working';
 			showPixels(frames[0]); stopCamera();
 			announcement = frames.length > 1 ? 'Set saman overlappande bilete.' : 'Lagar punktsky.';
-			const result = await stitch(frames);
+			// Keep one real frame before transferring the other ArrayBuffers to
+			// the worker. A failed stitch must not leave an empty capture.
+			const fallback = frames.length > 1
+				? { ...frames[0], data: new Uint8ClampedArray(frames[0].data) }
+				: frames[0];
+			let result: Capture;
+			try {
+				result = await stitch(frames);
+			} catch (error) {
+				if (disposed || id !== generation) return;
+				result = { ...fallback, inputFrames: frames.length, registeredFrames: 1 };
+				announcement = 'Panoramaet kunne ikkje registrerast. Brukar det første kamerabiletet.';
+				console.warn('Panorama registration failed, using captured frame:', error);
+			}
 			if (disposed || id !== generation) return;
 			captured = result;
 			await generateCloud(id);
