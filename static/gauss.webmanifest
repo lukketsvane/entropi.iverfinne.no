@@ -1,0 +1,16 @@
+{
+	"id": "/gauss",
+	"name": "FormNerd Gauss",
+	"short_name": "Gauss",
+	"description": "Ta eit bilete og lag ein 3D Gaussian.",
+	"lang": "nn",
+	"start_url": "/gauss",
+	"scope": "/gauss",
+	"display": "standalone",
+	"orientation": "portrait",
+	"background_color": "#11100e",
+	"theme_color": "#11100e",
+	"icons": [
+		{ "src": "/gauss-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+	]
+}
