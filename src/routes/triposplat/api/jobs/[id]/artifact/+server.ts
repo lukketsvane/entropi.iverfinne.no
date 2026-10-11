@@ -1,4 +1,8 @@
 import { json } from '@sveltejs/kit';
+import type { Config } from '@sveltejs/adapter-vercel';
+
+// GPU proxy requests may exceed Vercel's 10-second default.
+export const config: Config = { split: true, maxDuration: 60 };
 import type { RequestHandler } from './$types';
 import { backendRequest } from '../../../../../../lib/server/triposplat';
 
