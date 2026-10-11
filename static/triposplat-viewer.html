@@ -1,85 +1,145 @@
 <!doctype html>
-<html lang="en">
+<html lang="nn">
 	<head>
 		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>TripoSplat preview</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="theme-color" content="#000000" />
+		<title>entropi · 3D-punktsky</title>
 		<style>
 			* { box-sizing: border-box; }
-			html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080d09; color: #d4e4d0; font: 12px system-ui, sans-serif; }
-			canvas { display: block; }
-			#message { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; background: #080d09; }
-			#message:empty::after { content: ''; width: 48px; height: 48px; border: 4px solid #fff5; border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite; }
+			html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; color: #fff; font: 12px system-ui, sans-serif; }
+			canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+			#message { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; background: #000; z-index: 2; }
+			#message:empty::after { content: ''; width: 44px; height: 44px; border: 3px solid #fff4; border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite; }
 			@keyframes spin { to { transform: rotate(360deg); } }
 		</style>
 		<script type="importmap">
 			{
 				"imports": {
 					"three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.180.0/three.module.js",
-					"three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/",
-					"@sparkjsdev/spark": "https://unpkg.com/@sparkjsdev/spark@2.0.0/dist/spark.module.js"
+					"three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/"
 				}
 			}
 		</script>
 	</head>
 	<body>
-		<div id="message" role="status" aria-label="Loading 3D preview"></div>
+		<div id="message" role="status" aria-label="Lastar 3D-punktsky"></div>
 		<script type="module">
+			import { decodeSplatPointCloud, MAX_SPLAT_BYTES } from './triposplat-point-cloud.js';
+
 			const message = document.getElementById('message');
 			const id = new URLSearchParams(location.search).get('job');
 
+			async function downloadLimited(response) {
+				if (!response.ok) {
+					const data = await response.json().catch(() => null);
+					throw new Error(data?.error || '3D-modellen kunne ikkje hentast.');
+				}
+				const length = Number(response.headers.get('content-length'));
+				if (length > MAX_SPLAT_BYTES) throw new Error('3D-modellen er for stor for denne visaren.');
+				if (!response.body) {
+					const buffer = await response.arrayBuffer();
+					if (buffer.byteLength > MAX_SPLAT_BYTES) throw new Error('3D-modellen er for stor.');
+					return buffer;
+				}
+				const reader = response.body.getReader();
+				const chunks = [];
+				let total = 0;
+				try {
+					for (;;) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						total += value.byteLength;
+						if (total > MAX_SPLAT_BYTES) throw new Error('3D-modellen er for stor.');
+						chunks.push(value);
+					}
+				} catch (error) {
+					await reader.cancel().catch(() => {});
+					throw error;
+				}
+				const bytes = new Uint8Array(total);
+				let offset = 0;
+				for (const chunk of chunks) {
+					bytes.set(chunk, offset);
+					offset += chunk.byteLength;
+				}
+				return bytes.buffer;
+			}
+
 			async function start() {
-				if (!id || !/^[A-Za-z0-9_-]{8,128}$/.test(id)) throw new Error('Invalid job ID.');
-				const [THREE, { OrbitControls }, { SparkRenderer, SplatMesh, SplatFileType }] = await Promise.all([
+				if (!id || !/^[A-Za-z0-9_-]{8,128}$/.test(id)) throw new Error('Ugyldig 3D-jobb.');
+				const [THREE, { OrbitControls }] = await Promise.all([
 					import('three'),
-					import('three/addons/controls/OrbitControls.js'),
-					import('@sparkjsdev/spark')
+					import('three/addons/controls/OrbitControls.js')
 				]);
+				const response = await fetch(
+					'/triposplat/api/jobs/' + encodeURIComponent(id) + '/artifact',
+					{ cache: 'no-store' }
+				);
+				const buffer = await downloadLimited(response);
+				const data = decodeSplatPointCloud(buffer);
+
+				const geometry = new THREE.BufferGeometry();
+				geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+				geometry.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+				geometry.computeBoundingSphere();
+
+				const material = new THREE.PointsMaterial({
+					size: data.count < 35_000 ? 0.018 : 0.011,
+					sizeAttenuation: true,
+					vertexColors: true,
+					transparent: false,
+					depthTest: true,
+					depthWrite: true
+				});
+				const cloud = new THREE.Points(geometry, material);
+				// Keep the orientation used by the original TripoSplat viewer.
+				const root = new THREE.Group();
+				cloud.rotation.y = Math.PI / 2;
+				root.rotation.x = Math.PI;
+				root.add(cloud);
+
 				const scene = new THREE.Scene();
-				const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 1000);
-				camera.position.set(0, 0.3, 1.8);
-				const renderer = new THREE.WebGLRenderer({ antialias: false });
-				renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+				scene.background = new THREE.Color(0x000000);
+				scene.add(root);
+				const camera = new THREE.PerspectiveCamera(46, innerWidth / innerHeight, 0.01, 50);
+				camera.position.set(0, 0.15, 3.6);
+				const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+				renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 				renderer.setSize(innerWidth, innerHeight);
 				document.body.appendChild(renderer.domElement);
-				scene.add(new SparkRenderer({ renderer }));
 				const controls = new OrbitControls(camera, renderer.domElement);
 				controls.enableDamping = true;
-				controls.minDistance = 0.2;
-				controls.maxDistance = 50;
-				const splat = new SplatMesh({
-					url: `/triposplat/api/jobs/${encodeURIComponent(id)}/artifact`,
-					fileType: SplatFileType.SPLAT
-				});
-				const root = new THREE.Group();
-				splat.rotation.y = Math.PI / 2;
-				root.rotation.x = Math.PI;
-				root.add(splat);
-				scene.add(root);
-				await splat.initialized;
-				const box = new THREE.Box3().setFromObject(root);
-				if (!box.isEmpty()) {
-					const center = box.getCenter(new THREE.Vector3());
-					const size = box.getSize(new THREE.Vector3());
-					const distance = Math.max(size.x, size.y, size.z) * 2;
-					controls.target.copy(center);
-					camera.position.copy(center).add(new THREE.Vector3(0, distance * 0.15, Math.max(1.8, distance)));
-					controls.update();
-				}
+				controls.dampingFactor = 0.08;
+				controls.minDistance = 1.1;
+				controls.maxDistance = 12;
+				controls.target.set(0, 0, 0);
+				controls.update();
 				message.remove();
-				addEventListener('resize', () => {
-					camera.aspect = innerWidth / innerHeight;
+
+				const resize = () => {
+					camera.aspect = innerWidth / Math.max(1, innerHeight);
 					camera.updateProjectionMatrix();
 					renderer.setSize(innerWidth, innerHeight);
-				});
+				};
+				addEventListener('resize', resize);
 				renderer.setAnimationLoop(() => {
+					if (document.hidden) return;
 					controls.update();
 					renderer.render(scene, camera);
 				});
+				addEventListener('pagehide', () => {
+					renderer.setAnimationLoop(null);
+					removeEventListener('resize', resize);
+					controls.dispose();
+					geometry.dispose();
+					material.dispose();
+					renderer.dispose();
+				}, { once: true });
 			}
 
 			start().catch((error) => {
-				message.textContent = error instanceof Error ? error.message : 'Could not load the 3D preview.';
+				message.textContent = error instanceof Error ? error.message : 'Kunne ikkje vise punktsky.';
 			});
 		</script>
 	</body>
