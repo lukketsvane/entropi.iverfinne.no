@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {imageToPointCloud, pointStride} from '../static/pointcloud/math.mjs';
 
 test('recorded video frames are accepted by the worker and produce a 3D-ready panorama', async () => {
   const responses = [];
@@ -30,6 +31,19 @@ test('recorded video frames are accepted by the worker and produce a 3D-ready pa
     assert.ok(response.height>=height);
     assert.ok(response.data instanceof ArrayBuffer);
     assert.equal(response.data.byteLength,response.width*response.height*4);
+    // Validate that the real panorama pixels reach the same 3D cloud
+    // conversion path used by the iPhone camera, given a depth prediction.
+    const depth = new Float32Array(response.width*response.height);
+    for(let y=0;y<response.height;y++)for(let x=0;x<response.width;x++)
+      depth[y*response.width+x] = Math.sin(x*.01)+Math.cos(y*.02);
+    const cloud = imageToPointCloud({
+      rgba: new Uint8ClampedArray(response.data),
+      width: response.width, height: response.height,
+      depth, depthWidth: response.width, depthHeight: response.height,
+      stride: pointStride(response.width,response.height)
+    });
+    assert.ok(cloud.count > 100);
+    assert.ok(cloud.positions.every(Number.isFinite));
   } finally {
     globalThis.self=originalSelf;
   }
