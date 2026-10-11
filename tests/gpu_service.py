@@ -38,7 +38,9 @@ class GaussianPacking(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source, output = Path(directory) / "input.ply", Path(directory) / "scene.splat"
             gaussian_ply(source)
-            self.assertEqual(pack_ply(source, output), 1)
+            count, bounds = pack_ply(source, output)
+            self.assertEqual(count, 1)
+            self.assertEqual(bounds, {"center": [1.0, 2.0, 3.0], "radius": 0.0})
             values = struct.unpack("<6f8B", output.read_bytes())
             self.assertEqual(values[:3], (1, 2, 3))
             np.testing.assert_allclose(values[3:6], [.2, .3, .4], rtol=1e-6)
@@ -49,13 +51,18 @@ class GaussianPacking(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source, output = Path(directory) / "input.ply", Path(directory) / "scene.splat"
             vertices = gaussian_ply(source)
+            bright = vertices.copy()
+            bright["x"] = 5
             faint = vertices.copy()
-            faint["x"] = 4
+            faint["x"] = 1000
             faint["opacity"] = -10
-            PlyData([PlyElement.describe(np.concatenate([vertices, faint]), "vertex")]).write(source)
-            self.assertEqual(pack_ply(source, output), 2)
-            self.assertEqual(len(output.read_bytes()), 64)
-            self.assertEqual(struct.unpack_from("<f", output.read_bytes(), 32)[0], 4)
+            PlyData([PlyElement.describe(np.concatenate([vertices, bright, faint]), "vertex")]).write(source)
+            count, bounds = pack_ply(source, output)
+            self.assertEqual(count, 3)
+            self.assertAlmostEqual(bounds["center"][0], 3)
+            self.assertLess(bounds["radius"], 3)
+            self.assertEqual(len(output.read_bytes()), 96)
+            self.assertEqual(struct.unpack_from("<f", output.read_bytes(), 64)[0], 1000)
 
     def test_plain_xyz_point_cloud_cannot_impersonate_gaussian_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -95,6 +102,7 @@ class ShadowService(unittest.TestCase):
                 self.assertEqual(job["status"], "succeeded")
                 self.assertEqual(job["sizeBytes"], 32)
                 self.assertEqual(len(job["sha256"]), 64)
+                self.assertEqual(job["camera"]["bounds"], {"center": [1.0, 2.0, 3.0], "radius": 0.0})
                 self.assertEqual(len(seen), 1)
                 self.assertEqual(resolutions, [420])
                 artifact = client.get(path + "/artifact", headers={**AUTH, "Range": "bytes=0-31"})

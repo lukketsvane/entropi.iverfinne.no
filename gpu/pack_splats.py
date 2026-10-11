@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from plyfile import PlyData
 
-def pack_ply(source: Path, destination: Path) -> int:
+def pack_ply(source: Path, destination: Path) -> tuple[int, dict]:
     vertices = PlyData.read(source)["vertex"].data
     required = ["x", "y", "z", "opacity"] + [f"scale_{i}" for i in range(3)] + [f"rot_{i}" for i in range(4)] + [f"f_dc_{i}" for i in range(3)]
     if not set(required).issubset(vertices.dtype.names or ()):
@@ -17,6 +17,9 @@ def pack_ply(source: Path, destination: Path) -> int:
     if not len(vertices) or not (np.isfinite(xyz).all() and np.isfinite(scales).all() and
         np.isfinite(colours).all() and np.isfinite(opacity).all() and np.isfinite(norm).all() and (norm > 1e-8).all()):
         raise ValueError("Invalid Gaussian parameters")
+    visible = xyz[opacity >= np.quantile(opacity, .25)]
+    lower, upper = np.quantile(visible, [.005, .995], axis=0)
+    bounds = {"center": ((lower + upper) / 2).tolist(), "radius": float(np.linalg.norm(upper - lower) / 2)}
     records = np.empty(len(vertices), dtype=np.dtype([("position", "<f4", (3,)), ("scale", "<f4", (3,)), ("rgba", "u1", (4,)), ("rotation", "u1", (4,))]))
     records["position"] = xyz
     records["scale"] = scales
@@ -24,4 +27,4 @@ def pack_ply(source: Path, destination: Path) -> int:
     records["rgba"][:, 3] = np.clip(np.rint(opacity * 255), 0, 255).astype(np.uint8)
     records["rotation"] = np.clip(np.rint(128 + 128 * rotations / norm[:, None]), 0, 255).astype(np.uint8)
     destination.write_bytes(records.tobytes())
-    return len(records)
+    return len(records), bounds
