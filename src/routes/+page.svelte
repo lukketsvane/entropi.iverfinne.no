@@ -5,6 +5,7 @@
 	import { createPointCloudViewer } from '../lib/pointcloud/viewer.mjs';
 	import { Viewfinder } from '../lib/pointcloud/viewfinder.mjs';
 	import { FrameRecorder } from '../lib/pointcloud/recorder.mjs';
+	import { HeadTracker } from '../lib/pointcloud/head-tracker';
 	import { imageToPointCloud, pointCloudPLY, pointStride } from '../../static/pointcloud/math.mjs';
 	import { estimateImageDepth } from '../../static/pointcloud/tiles.mjs';
 	import { captureSnapshot } from '../../static/pointcloud/panorama.mjs';
@@ -19,6 +20,8 @@
 	let stream: MediaStream | null = null;
 	let preview: Viewfinder | null = null;
 	let viewer: ReturnType<typeof createPointCloudViewer> | null = null;
+	let tracker: HeadTracker | null = null;
+	let trackingFailed = false;
 	const estimator = new DepthEstimator();
 	let mode = $state<'camera' | 'recording' | 'working' | 'done' | 'error'>('camera');
 	let announcement = $state('Trykk for eitt bilete. Hald inne medan du panorerer, og slepp for å lage ei punktsky.');
@@ -42,9 +45,26 @@
 		if (video) video.srcObject = null;
 	}
 	function clearResult() {
+		stopTracking();
 		viewer?.dispose(); viewer = null;
 		if (plyUrl) URL.revokeObjectURL(plyUrl);
 		plyUrl = '';
+	}
+	function stopTracking() {
+		const active = tracker; tracker = null;
+		active?.stop();
+	}
+	function startTracking() {
+		if (disposed || mode !== 'done' || !viewer || !video || tracker || trackingFailed || document.hidden) return;
+		const next = new HeadTracker(video, {
+			pose: pose => viewer?.setHeadPose(pose),
+			state: () => {},
+			error: () => {
+				if (tracker !== next) return;
+				tracker = null; trackingFailed = true;
+			}
+		});
+		tracker = next; void next.start();
 	}
 	function stopPanorama() {
 		panoramaWorker?.terminate(); panoramaWorker = null;
@@ -58,10 +78,10 @@
 	}
 	function openCapture() {
 		if (mode !== 'camera') return;
-		stopCamera(); photoInput?.click();
+		stopCamera(); preview?.clear(); photoInput?.click();
 	}
 	async function startCamera() {
-		if (disposed || mode !== 'camera' || stream || !video || !navigator.mediaDevices?.getUserMedia) return;
+		if (disposed || document.hidden || mode !== 'camera' || stream || !video || !navigator.mediaDevices?.getUserMedia) return;
 		const attempt = ++cameraAttempt;
 		try {
 			const next = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
@@ -159,7 +179,7 @@
 	}
 	function fail(error: unknown, id: number) {
 		if (disposed || id !== generation) return;
-		clearResult(); stopCamera(); mode = 'error';
+		clearResult(); estimator.dispose(); stopCamera(); mode = 'error';
 		announcement = error instanceof Error ? error.message : 'Kunne ikkje lage punktskyen. Trykk for å prøve igjen.';
 	}
 	async function generateCloud(id: number) {
@@ -173,6 +193,8 @@
 				announcement = update.phase.startsWith('loading') ? 'Lastar djupnemodellen til eininga.' : 'Reknar djupn.';
 			}, () => !disposed && id === generation);
 			if (disposed || id !== generation) return;
+			// Release the depth model before starting the small front-camera detector.
+			estimator.dispose();
 			const cloud = imageToPointCloud({ rgba: pixels.data, width: pixels.width, height: pixels.height,
 				depth: prediction.depth, depthWidth: prediction.width, depthHeight: prediction.height,
 				stride: pointStride(pixels.width, pixels.height), focalEstimate: pixels.focalEstimate });
@@ -183,7 +205,8 @@
 			viewer.setStyle('crt');
 			// Preserve captured RGB in PLY. The limited CRT palette is display-only.
 			plyUrl = URL.createObjectURL(new Blob([pointCloudPLY(cloud)], { type: 'application/octet-stream' }));
-			announcement = `${pixels.registeredFrames ?? 1} av ${pixels.inputFrames ?? 1} bilete registrerte. Punktsky klar. Dra for å rotere, bruk to fingrar for å zoome. Dobbelttrykk for eit nytt bilete. Djupna er estimert.`;
+			announcement = `${pixels.registeredFrames ?? 1} av ${pixels.inputFrames ?? 1} bilete registrerte. Punktsky klar. Flytt hovudet for å sjå djupna. Dra for å rotere, bruk to fingrar for å zoome. Dobbelttrykk for eit nytt bilete. Djupna er estimert.`;
+			startTracking();
 		} catch (error) { fail(error, id); }
 	}
 	async function decodePhoto(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close(): void }> {
@@ -229,7 +252,7 @@
 		generation++; recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); captured = null;
 		progress = null; lastTap = null; mode = 'camera';
 		announcement = 'Trykk for eitt bilete. Hald inne for fleire bilete.';
-		if (preview) { preview.source = null; preview.active = true; }
+		preview?.clear(); if (preview) preview.active = true;
 		await tick(); void startCamera();
 	}
 	function retry() {
@@ -253,21 +276,28 @@
 	onMount(() => {
 		try { preview = new Viewfinder(finder); } catch { announcement = 'Kamerasøkjaren kunne ikkje startast. Trykk for å velje eit bilete.'; }
 		void startCamera();
+		const suspend = () => {
+			clearTimeout(resumeTimer); recorder.abort(); stopTracking(); stopCamera();
+			if (mode === 'camera') preview?.clear();
+		};
 		const resume = () => {
 			clearTimeout(resumeTimer);
-			if (document.visibilityState !== 'visible') { recorder.abort(); return; }
+			if (document.visibilityState !== 'visible') { suspend(); return; }
 			if (updated.current && mode === 'camera') { location.reload(); return; }
 			resumeTimer = setTimeout(() => {
 				if (mode === 'camera') {
 					if (stream && !stream.getVideoTracks().some(track => track.readyState === 'live')) stopCamera();
 					void startCamera();
 				}
+				else if (mode === 'done') startTracking();
 			}, 300);
 		};
 		window.addEventListener('focus', resume); document.addEventListener('visibilitychange', resume);
+		window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', resume);
 		return () => {
 			disposed = true; generation++; clearTimeout(resumeTimer); recorder.abort();
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
+			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
 			estimator.dispose(); stopPanorama(); stopCamera(); preview?.dispose(); clearResult(); captured = null;
 		};
 	});
@@ -303,7 +333,7 @@
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
 	<!-- Native keyboard/screen-reader alternatives stay invisible until focus. -->
-	<div class="cloud" class:hidden={mode !== 'done'} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} role="img" aria-label="Punktsky. Dra for å rotere, bruk to fingrar for å zoome. Dobbelttrykk for eit nytt bilete."></div>
+	<div class="cloud" class:hidden={mode !== 'done'} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} role="img" aria-label="Punktsky. Flytt hovudet for å sjå djupna. Dra for å rotere, bruk to fingrar for å zoome. Dobbelttrykk for eit nytt bilete."></div>
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
 		{#if plyUrl}<a class="access-control download" href={plyUrl} download="entropi-punktsky.ply" aria-label="Last ned 3D-punktsky som PLY"><i class="download-mark" aria-hidden="true"></i></a>{/if}

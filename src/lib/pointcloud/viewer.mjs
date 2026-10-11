@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {CanvasPointCloudViewer} from './canvas-viewer.mjs';
+import {HeadParallax} from './head-parallax.mjs';
 
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 
@@ -32,6 +33,8 @@ export class PointCloudViewer {
     host.replaceChildren(this.renderer.domElement);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.01, 100);
+    this.parallax = new HeadParallax();
+    this.reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.085;
@@ -42,7 +45,7 @@ export class PointCloudViewer {
     this.controls.maxDistance = cloud.radius * 12;
     this.controls.touches.ONE = THREE.TOUCH.ROTATE;
     this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
-    this.controls.autoRotate = true;
+    this.controls.autoRotate = !this.reducedMotion;
     this.controls.autoRotateSpeed = 0.26;
 
     const geometry = new THREE.BufferGeometry();
@@ -151,12 +154,19 @@ export class PointCloudViewer {
       if (document.hidden || time - previous < 32) return;
       previous = time;
       this.controls.update();
-      if (this.dirty) {
-        this.renderer.render(this.scene, this.camera);
+      if (this.dirty || this.parallax.moving) {
+        this.renderer.render(this.scene, this.parallax.camera(this.camera,this.controls.target,time,this.reducedMotion));
         this.dirty = false;
       }
     };
     this.animation = requestAnimationFrame(frame);
+  }
+
+  /** @param {import('./head-parallax.mjs').HeadPose|null} pose */
+  setHeadPose(pose) {
+    this.parallax.setPose(pose);
+    if(pose)this.controls.autoRotate=false;
+    this.dirty=true;
   }
 
   /** @param {'color' | 'silver' | 'depth' | 'mono' | 'crt'} style */
