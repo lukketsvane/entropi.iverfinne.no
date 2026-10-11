@@ -5,6 +5,7 @@
 	import { createPointCloudViewer } from '../lib/pointcloud/viewer.mjs';
 	import { Viewfinder } from '../lib/pointcloud/viewfinder.mjs';
 	import { FrameRecorder } from '../lib/pointcloud/recorder.mjs';
+	import { ShakeToClear } from '../lib/pointcloud/shake.mjs';
 	import { HeadTracker } from '../lib/pointcloud/head-tracker';
 	import { PX10Printer } from '../lib/print/printer.mjs';
 	import { cloudPrintJob } from '../lib/print/cloud-raster.mjs';
@@ -24,6 +25,7 @@
 	let viewer: ReturnType<typeof createPointCloudViewer> | null = null;
 	let tracker: HeadTracker | null = null;
 	let printer: PX10Printer | null = null;
+	let shake: ShakeToClear | null = null;
 	let printSession = '';
 	let captureJobId = '';
 	let suppressCaptureClick = false;
@@ -84,7 +86,7 @@
 		if (preview) { preview.source = canvas; preview.active = true; }
 	}
 	function openCapture() {
-		if (mode !== 'camera' || printer?.choosing || choosePrinter()) return;
+		if (mode !== 'camera' || printer?.choosing || choosePrinter() || shake?.requestFromGesture()) return;
 		stopCamera(); preview?.clear(); photoInput?.click();
 	}
 	function choosePrinter() {
@@ -126,9 +128,10 @@
 	function beginCapture(event: PointerEvent) {
 		if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0) || mode !== 'camera') return;
 		if (printer?.choosing) return;
-		if (choosePrinter()) { event.preventDefault(); suppressCaptureClick = true; return; }
+		if (choosePrinter() || shake?.requestFromGesture()) { event.preventDefault(); suppressCaptureClick = true; return; }
 		if (!video || video.readyState < 2 || !video.videoWidth) return;
 		event.preventDefault();
+		suppressCaptureClick = false;
 		capturePointer = event.pointerId;
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		try { recorder.begin(); } catch (error) { recorder.abort(); fail(error, ++generation); }
@@ -144,7 +147,7 @@
 		if (suppressCaptureClick) { suppressCaptureClick = false; return; }
 		if (printer?.choosing) return;
 		if (mode !== 'camera') return;
-		if (choosePrinter()) return;
+		if (choosePrinter() || shake?.requestFromGesture()) return;
 		if (!video || video.readyState < 2 || !video.videoWidth) { openCapture(); return; }
 		// Mouse/touch already finish on release; keyboard and assistive clicks still capture.
 		if (event.detail === 0) void finishCapture([pixelsFor(video, video.videoWidth, video.videoHeight)]);
@@ -272,12 +275,20 @@
 		event.preventDefault(); void captureFiles(files);
 	}
 	async function retake() {
-		generation++; recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); captured = null;
+		generation++; recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera(); captured = null;
 		captureJobId = '';
+		capturePointer = null; cloudPointer = null;
 		progress = null; lastTap = null; mode = 'camera';
 		announcement = 'Trykk for eitt bilete. Hald inne for fleire bilete.';
-		preview?.clear(); if (preview) preview.active = true;
+		if (photoInput) photoInput.value = '';
+		if (preview) { preview.source = null; preview.clear(); preview.active = true; }
 		await tick(); void startCamera();
+	}
+	function clearCanvas() {
+		// A lifted finger after a shake must not capture the discarded frames again.
+		if (capturePointer !== null || cloudPointer !== null) suppressCaptureClick = true;
+		// A released shutter has already committed its print; clearing only resets the draft/view.
+		void retake();
 	}
 	function retry() {
 		if (!captured) { void retake(); return; }
@@ -299,6 +310,8 @@
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
+		shake = new ShakeToClear({ target: window, hasDraft: () => recorder.active || mode !== 'camera', clear: clearCanvas });
+		shake.start();
 		printer = new PX10Printer();
 		const printStatus = (event: Event) => {
 			const state = (event as CustomEvent).detail.state as string;
@@ -317,12 +330,14 @@
 		void startCamera();
 		const suspend = () => {
 			clearTimeout(resumeTimer); recorder.abort(); stopTracking(); stopCamera();
+			shake?.suspend();
 			printer?.suspend();
 			if (mode === 'camera') preview?.clear();
 		};
 		const resume = () => {
 			clearTimeout(resumeTimer);
 			if (document.visibilityState !== 'visible') { suspend(); return; }
+			shake?.start();
 			restorePrinter();
 			if (updated.current && mode === 'camera') { location.reload(); return; }
 			resumeTimer = setTimeout(() => {
@@ -337,6 +352,7 @@
 		window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', resume);
 		return () => {
 			disposed = true; generation++; clearTimeout(resumeTimer); recorder.abort();
+			shake?.dispose(); shake = null;
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
 			window.removeEventListener('beacio:ready', restorePrinter); window.removeEventListener('beacio:extension:ready', restorePrinter);
@@ -366,7 +382,7 @@
 		{/if}
 	</div>
 	{#if mode === 'camera' || mode === 'recording'}
-		<button class="capture-plane" type="button" aria-label="Ta bilete og lag 3D-punktsky. Hald inne for panorama. Første trykk vel PX10 når Bluetooth er tilgjengeleg."
+		<button class="capture-plane" type="button" aria-label="Trykk for bilete og utskrift. Hald inne for panorama. Rist for å tømme lerretet. Dei første trykka gir systemløyve når det trengst."
 			onpointerdown={beginCapture} onpointerup={endCapture} onpointercancel={cancelCapture} onlostpointercapture={cancelCapture} oncontextmenu={event => event.preventDefault()} onclick={captureClick}></button>
 		<button class="access-control" type="button" aria-label="Vel bilete frå telefonen" onclick={openCapture}><i class="plus" aria-hidden="true"></i></button>
 	{:else if mode === 'working'}
@@ -376,7 +392,7 @@
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
 	<!-- Native keyboard/screen-reader alternatives stay invisible until focus. -->
-	<div class="cloud" class:hidden={mode !== 'done'} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} role="img" aria-label="Punktsky. Flytt hovudet for å sjå djupna. Dra for å rotere, bruk to fingrar for å zoome. Dobbelttrykk for eit nytt bilete."></div>
+	<div class="cloud" class:hidden={mode !== 'done'} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} role="img" aria-label="Punktsky. Flytt hovudet for å sjå djupna. Dra for å rotere, bruk to fingrar for å zoome. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
 		{#if plyUrl}<a class="access-control download" href={plyUrl} download="entropi-punktsky.ply" aria-label="Last ned 3D-punktsky som PLY"><i class="download-mark" aria-hidden="true"></i></a>{/if}
