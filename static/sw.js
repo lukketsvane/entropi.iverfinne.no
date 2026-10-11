@@ -1,14 +1,14 @@
 /* Skall-cache for heimskjerm-appen. Kameraet treng ikkje nett, så etter to opningar startar alt utan dekning.
  * HTML: nett først (ny deploy syner med ein gong), cache som reserve.
  * Alt anna frå same opphav: cache først, oppdater i bakgrunnen. */
-const V = 'entropi-v1';
+const V = 'entropi-v2';
 
 self.addEventListener('install', (e) => {
 	e.waitUntil(
 		caches
 			.open(V)
 			.then((c) =>
-				c.addAll(['/', '/manifest.webmanifest', '/icons/icon-192.png', '/fonts/michroma-latin-400-normal.woff2'])
+				c.addAll(['/', '/camera', '/manifest.webmanifest', '/icons/icon-192.png', '/fonts/michroma-latin-400-normal.woff2'])
 			)
 			.then(() => self.skipWaiting())
 			.catch(() => self.skipWaiting())
@@ -35,12 +35,14 @@ self.addEventListener('fetch', (e) => {
 		e.respondWith(
 			Promise.race([
 				fetch(req).then((res) => {
-					const copy = res.clone();
-					caches.open(V).then((c) => c.put('/', copy));
+					if (res.ok) {
+						const copy = res.clone();
+						caches.open(V).then((c) => c.put(url.pathname, copy));
+					}
 					return res;
 				}),
 				new Promise((_, rej) => setTimeout(rej, 3500))
-			]).catch(() => caches.match('/').then((r) => r || Response.error()))
+			]).catch(() => caches.match(url.pathname).then((r) => r || Response.error()))
 		);
 		return;
 	}

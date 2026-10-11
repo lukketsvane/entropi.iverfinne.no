@@ -9,7 +9,8 @@
 			html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080d09; color: #d4e4d0; font: 12px system-ui, sans-serif; }
 			canvas { display: block; }
 			#message { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; background: #080d09; }
-			#hint { position: absolute; left: 12px; bottom: 10px; color: #e2f2dc; text-shadow: 0 1px 5px #000; pointer-events: none; }
+			#message:empty::after { content: ''; width: 48px; height: 48px; border: 4px solid #fff5; border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite; }
+			@keyframes spin { to { transform: rotate(360deg); } }
 		</style>
 		<script type="importmap">
 			{
@@ -22,8 +23,7 @@
 		</script>
 	</head>
 	<body>
-		<div id="message">Loading 3D preview…</div>
-		<div id="hint">DRAG TO ORBIT · SCROLL TO ZOOM</div>
+		<div id="message" role="status" aria-label="Loading 3D preview"></div>
 		<script type="module">
 			const message = document.getElementById('message');
 			const id = new URLSearchParams(location.search).get('job');
