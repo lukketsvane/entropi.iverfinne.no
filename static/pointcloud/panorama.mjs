@@ -60,8 +60,8 @@ export function estimateTranslation(a, b) {
   const baseline = errorAt(0, 0);
   if (!Number.isFinite(baseline)) return null;
   let best = {dx:0,dy:0,score:baseline};
-  for (let dy = -maxDy; dy <= maxDy; dy += 3) {
-    for (let dx = -maxDx; dx <= maxDx; dx += 3) {
+  for (let dy = -maxDy; dy <= maxDy; dy++) {
+    for (let dx = -maxDx; dx <= maxDx; dx++) {
       const score = errorAt(dx,dy);
       if (score < best.score) best = {dx,dy,score};
     }
