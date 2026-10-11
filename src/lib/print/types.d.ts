@@ -21,7 +21,7 @@ export interface BLEDevice extends EventTarget {
 }
 export interface BluetoothAPI {
 	getDevices?(): Promise<BLEDevice[]>;
-	requestDevice(options: { filters: { name: string }[]; optionalServices: string[] }): Promise<BLEDevice>;
+	requestDevice(options: { filters: { name: string; services?: string[] }[]; exclusionFilters?: { namePrefix: string }[]; optionalServices: string[] }): Promise<BLEDevice>;
 }
 export interface PrinterOptions {
 	bluetooth?: () => BluetoothAPI | undefined;

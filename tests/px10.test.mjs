@@ -66,7 +66,7 @@ test('first gesture requests only the observed PX10 and connecting consumes no p
   const choosing = printer.choose();
   assert.equal(fake.choices(), 1, 'Picker called synchronously, inside user activation');
   assert.equal(await choosing, true); assert.equal(printer.ready, true);
-  assert.deepEqual(fake.requested[0], { filters: [{ name: PRINTER_NAME }], optionalServices: [UUID('ae30'), UUID('af30'), UUID('ae3a')] });
+  assert.deepEqual(fake.requested[0], { filters: [{ name: PRINTER_NAME, services: [UUID('af30')] }], exclusionFilters: [{namePrefix: `${PRINTER_NAME} - Clone`}], optionalServices: [UUID('ae30'), UUID('af30'), UUID('ae3a')] });
   assert.equal(fake.writes.length, 0); assert.ok([...fake.saved.values()].includes(fake.device.id));
 });
 
@@ -95,6 +95,26 @@ test('cancelled first-time setup leaves normal camera actions available, without
   const states = []; printer.addEventListener('status', e => states.push(e.detail.state));
   assert.equal(await printer.choose(), false); assert.equal(printer.needsChoice, false);
   assert.equal(printer.device, null); assert.equal(states.at(-1), 'cancelled');
+});
+
+test('advertisement clones cannot be connected, remembered or used for a print', async t => {
+  const fake = fakeBLE({name: `${PRINTER_NAME} - Clone 1`}); fake.grant();
+  const printer = printerFor(fake); t.after(() => printer.dispose());
+  assert.equal(await printer.start(), false); assert.equal(fake.connections(), 0);
+  assert.equal(await printer.choose(), false); assert.equal(printer.needsChoice, true);
+  assert.equal(fake.saved.size, 0); assert.equal(printer.enqueue('clone', new Uint8Array(20)), false);
+});
+
+test('a stale generic-service grant permits fresh pairing with the PX10 UUIDs', async t => {
+  const fake = fakeBLE(); fake.grant();
+  const discover = fake.device.gatt.getPrimaryService;
+  fake.device.gatt.getPrimaryService = async () => { throw new DOMException('Service was not granted', 'SecurityError'); };
+  const printer = printerFor(fake); t.after(() => printer.dispose());
+  assert.equal(await printer.start(), false); assert.equal(printer.device, null);
+  assert.equal(printer.needsChoice, true); assert.equal(fake.saved.size, 0);
+  fake.device.gatt.getPrimaryService = discover;
+  assert.equal(await printer.choose(), true); assert.equal(printer.ready, true);
+  await printer.send('physical', new Uint8Array(20)); assert.equal(fake.writes.length, 1);
 });
 
 test('one result prints automatically, in ordered 20-byte writes, without replaying a retry', async t => {

@@ -92,12 +92,11 @@ export class PX10Printer extends EventTarget {
   }
   /** @param {BLEDevice} device */
   attach(device) {
-    if (device.name !== PRINTER_NAME || !device.gatt) throw new Error('Vel Luxorp.PX10-DAAF.');
+    if (device.name !== PRINTER_NAME || !device.gatt) throw new Error('Vel den fysiske Luxorp.PX10-DAAF, ikkje ein Clone.');
     if (this.device === device) return;
     this.release();
     this.device = device;
     device.addEventListener('gattserverdisconnected', this.onDisconnect);
-    this.remember(device);
   }
   release() {
     this.version++; this.clearChannel();
@@ -144,7 +143,8 @@ export class PX10Printer extends EventTarget {
     let request;
     try {
       request = bluetooth.requestDevice({
-        filters: [{ name: PRINTER_NAME }],
+        filters: [{ name: PRINTER_NAME, services: [UUID('af30')] }],
+        exclusionFilters: [{ namePrefix: `${PRINTER_NAME} - Clone` }],
         optionalServices: [UUID('ae30'), UUID('af30'), UUID('ae3a')]
       });
     } catch (error) { request = Promise.reject(error); }
@@ -155,8 +155,8 @@ export class PX10Printer extends EventTarget {
         this.attach(device); await this.link(); void this.drain(); return true;
       } catch (error) {
         // Cancelling the system picker leaves the camera usable this session.
-        if (!this.device) this.choiceDismissed = true;
         const cancelled = error instanceof Error && ['NotFoundError', 'AbortError'].includes(error.name);
+        if (!this.device) this.choiceDismissed = cancelled;
         this.emit(cancelled ? 'cancelled' : 'failed', { message: messageOf(error) });
         return false;
       } finally { this.choosing = false; }
@@ -192,13 +192,17 @@ export class PX10Printer extends EventTarget {
         notifier.addEventListener('characteristicvaluechanged', this.onNotification);
         await bounded(notifier.startNotifications(), 10000, 'PX10 svarte ikkje.');
         if (!current()) throw new Error('Tilkoplinga vart avbroten.');
-        this.writer = writer; this.failures = 0; this.emit('connected');
+        this.writer = writer; this.failures = 0; this.remember(device); this.emit('connected');
         return true;
       } catch (error) {
         if (current()) {
           this.version++; this.clearChannel(); this.failures++;
           if (device.gatt.connected) device.gatt.disconnect();
-          this.emit('reconnecting', { message: messageOf(error) });
+          // A stale grant containing only generic services cannot be repaired by reconnecting.
+          // A fresh, deliberate gesture must request the PX10 UUIDs again.
+          const missingGrant = error instanceof Error && ['NotAllowedError', 'SecurityError', 'NotFoundError'].includes(error.name);
+          if (missingGrant) { this.release(); this.choiceDismissed = false; }
+          this.emit(missingGrant ? 'failed' : 'reconnecting', { message: messageOf(error) });
         }
         throw error;
       }
