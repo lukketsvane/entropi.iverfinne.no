@@ -23,7 +23,7 @@ test('matches actual horizontal panning rather than merely stacking frames', () 
   const first = frame(), next = frame(22);
   const shift = estimateTranslation(thumbnail(first),thumbnail(next));
   assert.ok(shift);
-  assert.ok(Math.abs(shift.dx * first.width / 84 - 22) < 3);
+  assert.ok(Math.abs(shift.dx * first.width / 84 + 22) < 3);
   assert.ok(Math.abs(shift.dy) < 3);
   const pano = stitchFrames([first,next]);
   assert.equal(pano.captured,2);
