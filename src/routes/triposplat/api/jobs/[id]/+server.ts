@@ -35,7 +35,11 @@ export const GET: RequestHandler = async ({ params, request }) => {
 			},
 			{ headers: { 'Cache-Control': 'no-store' } }
 		);
-	} catch {
+	} catch (error) {
+		// Keep credentials out of logs, but retain the network failure class for diagnostics.
+		const cause = error instanceof Error && 'cause' in error ? error.cause : null;
+		console.error('TripoSplat status upstream:', error instanceof Error ? error.message : 'unknown',
+			cause instanceof Error ? cause.message : '');
 		return json({ error: 'Generation server is unavailable. Try again shortly.' }, { status: 502 });
 	}
 };
