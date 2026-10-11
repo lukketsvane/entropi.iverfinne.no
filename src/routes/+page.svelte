@@ -8,11 +8,18 @@
 	let photoInput = $state<HTMLInputElement | undefined>();
 	let cloudHost = $state<HTMLDivElement | undefined>();
 	let stream: MediaStream | null = null;
-	let viewer: { reset(): void; dispose(): void } | null = null;
+	let viewer: { reset(): void; dispose(): void; setStyle(style: 'color' | 'silver' | 'depth'): void; setPointSize(size: number): void } | null = null;
 	const estimator = new DepthEstimator();
 	let mode = $state<'camera' | 'working' | 'done' | 'error'>('camera');
 	let announcement = $state('');
 	let errorMessage = $state('');
+	let progressPhase = $state('KLARGJER');
+	let progressPercent = $state<number | null>(null);
+	let visualStyle = $state<'color' | 'silver' | 'depth'>('color');
+	let pointSize = $state(1);
+	let showOriginal = $state(false);
+	let cameraReady = $state(false);
+	let cloudCount = $state(0);
 	let capturedUrl = $state('');
 	let plyUrl = $state('');
 	let capturedImage: File | null = null;
@@ -27,6 +34,7 @@
 		stream?.getTracks().forEach((track) => track.stop());
 		stream = null;
 		if (video) video.srcObject = null;
+		cameraReady = false;
 	}
 
 	function clearResult() {
@@ -39,6 +47,8 @@
 	function clearCapture() {
 		clearResult();
 		if (capturedUrl) URL.revokeObjectURL(capturedUrl);
+		showOriginal = false;
+		cloudCount = 0;
 		capturedUrl = '';
 		capturedImage = null;
 		capturedPixels = null;
@@ -64,6 +74,7 @@
 			stream = next;
 			video.srcObject = next;
 			await video.play().catch(() => {});
+			cameraReady = video.readyState >= 2;
 		} catch {
 			announcement = 'Trykk på utløysaren for å bruke kameraet eller velje eit bilete.';
 		}
@@ -138,6 +149,8 @@
 		try {
 			const { canvas, pixels } = canvasFor(video, video.videoWidth, video.videoHeight);
 			mode = 'working';
+			progressPhase = 'FANGAR LYS';
+			progressPercent = null;
 			announcement = 'Lagar punktsky.';
 			stopCamera();
 			await saveCapture(canvas, pixels, id);
@@ -173,6 +186,8 @@
 		errorMessage = '';
 		mode = 'working';
 		announcement = 'Les biletet.';
+		progressPhase = 'LES BILETET';
+		progressPercent = null;
 		stopCamera();
 		try {
 			const decoded = await decodePhoto(selected);
@@ -190,6 +205,8 @@
 		mode = 'working';
 		errorMessage = '';
 		announcement = 'Lagar punktsky.';
+		progressPhase = 'BYGGJER ROM';
+		progressPercent = null;
 		const size = inferenceSize(pixels.width, pixels.height);
 		const original = document.createElement('canvas');
 		original.width = pixels.width;
@@ -204,10 +221,24 @@
 		try {
 			const prediction = await estimator.estimate(data.data, size.width, size.height, (progress: { phase: string; percent?: number }) => {
 				if (disposed || id !== generation) return;
-				announcement = progress.phase.startsWith('loading')
-					? `Lastar 3D-modellen, ${progress.percent ?? 0} prosent.` : 'Bereknar djupn og lagar punktsky.';
+				if (progress.phase === 'loading-model') {
+					progressPhase = 'LASTAR DJUPNEMODELL';
+					progressPercent = progress.percent ?? null;
+				} else if (progress.phase === 'loading-runtime') {
+					progressPhase = 'KLARGJER MOTOR';
+					progressPercent = progress.percent ?? null;
+				} else if (progress.phase === 'starting') {
+					progressPhase = 'STARTAR MODELL';
+					progressPercent = null;
+				} else {
+					progressPhase = 'REKNAR DJUPN';
+					progressPercent = null;
+				}
+				announcement = progressPercent === null ? progressPhase : `${progressPhase}, ${progressPercent} prosent.`;
 			});
 			if (disposed || id !== generation) return;
+			progressPhase = 'PLASSERER PUNKT';
+			progressPercent = null;
 			const cloud = imageToPointCloud({ rgba: pixels.data, width: pixels.width, height: pixels.height,
 				depth: prediction.depth, depthWidth: prediction.width, depthHeight: prediction.height,
 				stride: pointStride(pixels.width, pixels.height) });
@@ -217,6 +248,9 @@
 			await tick();
 			if (disposed || id !== generation || !cloudHost) return;
 			viewer = new PointCloudViewer(cloudHost, cloud, (error: Error) => fail(error, id));
+			cloudCount = cloud.count;
+			viewer.setStyle(visualStyle);
+			viewer.setPointSize(pointSize);
 			const ply = pointCloudPLY(cloud);
 			plyUrl = URL.createObjectURL(new Blob([ply], { type: 'application/octet-stream' }));
 			announcement = 'Punktsky klar. Dra for å rotere, bruk to fingrar for å zoome. Djupna er estimert frå biletet.';
@@ -228,10 +262,23 @@
 		estimator.dispose();
 		clearCapture();
 		errorMessage = '';
+		progressPercent = null;
+		visualStyle = 'color';
+		pointSize = 1;
 		mode = 'camera';
 		announcement = '';
 		await tick();
 		void startCamera();
+	}
+
+	function setStyle(style: 'color' | 'silver' | 'depth') {
+		visualStyle = style;
+		viewer?.setStyle(style);
+	}
+
+	function changePointSize() {
+		pointSize = pointSize >= 1.6 ? 0.7 : pointSize >= 1 ? 1.6 : 1;
+		viewer?.setPointSize(pointSize);
 	}
 
 	function retry() {
