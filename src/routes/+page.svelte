@@ -8,6 +8,9 @@
 	let mode = $state<'camera' | 'working' | 'done'>('camera');
 	let jobId = $state('');
 	let announcement = $state('');
+	let capturedUrl = $state('');
+	let capturedImage: File | null = null;
+	let shareUnavailable = false;
 	let activeId = '';
 	let disposed = false;
 	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -16,6 +19,13 @@
 		stream?.getTracks().forEach((track) => track.stop());
 		stream = null;
 		if (video) video.srcObject = null;
+	}
+
+	function clearCapture() {
+		if (capturedUrl) URL.revokeObjectURL(capturedUrl);
+		capturedUrl = '';
+		capturedImage = null;
+		shareUnavailable = false;
 	}
 
 	function openCapture() {
@@ -59,6 +69,7 @@
 			window.removeEventListener('focus', resume);
 			document.removeEventListener('visibilitychange', resume);
 			stopCamera();
+			clearCapture();
 		};
 	});
 
@@ -122,11 +133,14 @@
 		const selected = input.files?.[0];
 		input.value = '';
 		if (!selected) return;
+		clearCapture();
 		mode = 'working';
 		announcement = 'Uploading photo.';
 		stopCamera();
 		try {
 			const image = await prepareImage(selected);
+			capturedImage = image;
+			capturedUrl = URL.createObjectURL(image);
 			const form = new FormData();
 			form.set('image', image, image.name);
 			const response = await fetch('/triposplat/api/jobs', { method: 'POST', body: form });
@@ -137,7 +151,7 @@
 		} catch (error) {
 			if (disposed) return;
 			mode = 'camera';
-			announcement = 'Capture failed.';
+			announcement = capturedImage ? 'Generation failed. Photo ready to share.' : 'Capture failed.';
 			window.alert(error instanceof Error ? error.message : 'Could not generate a 3D splat.');
 			await tick();
 			void startCamera();
@@ -147,10 +161,24 @@
 	async function retake() {
 		activeId = '';
 		jobId = '';
+		clearCapture();
 		mode = 'camera';
 		announcement = '';
 		await tick();
 		void startCamera();
+	}
+
+	async function sharePhoto(event: MouseEvent) {
+		if (!capturedImage || !navigator.share || shareUnavailable) return;
+		if (navigator.canShare && !navigator.canShare({ files: [capturedImage] })) return;
+		event.preventDefault();
+		try {
+			await navigator.share({ files: [capturedImage] });
+		} catch (error) {
+			if (error instanceof DOMException && error.name === 'AbortError') return;
+			shareUnavailable = true;
+			window.alert('Could not share the photo. Tap the share icon again to open it for saving.');
+		}
 	}
 </script>
 
@@ -176,6 +204,11 @@
 			<div class="working" role="progressbar" aria-label="Generating 3D splat"><span></span></div>
 		{/if}
 	{/if}
+	{#if capturedUrl}
+		<a class="share-photo" href={capturedUrl} target="_blank" rel="noopener" aria-label="Share or save photo for printing" onclick={sharePhoto}>
+			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m0 0 5 5m-5-5L7 8M4 14v7h16v-7" /></svg>
+		</a>
+	{/if}
 	<input bind:this={photoInput} id="photo" type="file" accept="image/*" capture="environment" onchange={capture} oncancel={() => void startCamera()} />
 	<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
 </main>
@@ -190,9 +223,10 @@
 	.working { position: absolute; inset: 0; display: grid; place-items: center; }
 	.working span { width: 56px; height: 56px; border: 4px solid #fff5; border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite; }
 	@keyframes spin { to { transform: rotate(360deg); } }
-	.retake, .download { position: absolute; display: grid; place-items: center; width: 48px; height: 48px; background: #0009; border: 1px solid #fff7; border-radius: 50%; color: #fff; cursor: pointer; }
+	.retake, .download, .share-photo { position: absolute; display: grid; place-items: center; width: 48px; height: 48px; background: #0009; border: 1px solid #fff7; border-radius: 50%; color: #fff; cursor: pointer; }
 	.retake { top: max(18px, env(safe-area-inset-top)); left: 18px; }
-	.download { top: max(18px, env(safe-area-inset-top)); right: 18px; }
+	.download { top: max(18px, env(safe-area-inset-top)); right: 76px; }
+	.share-photo { top: max(18px, env(safe-area-inset-top)); right: 18px; }
 	svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 	.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 </style>
