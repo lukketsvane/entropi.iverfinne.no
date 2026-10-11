@@ -33,7 +33,7 @@ python3.11 -m venv .venv
 .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000 --env-file .env --workers 1
 ```
 
-GPU inference is serialized, with one pending job and a 210 second worker timeout. Each model runs in a subprocess so its GPU memory is released after inference. Uploaded photos and intermediate PLY files are deleted immediately after the job. Packed artifacts expire after 30 minutes and all interrupted jobs are removed at restart. A `.splat` includes every predicted Gaussian, with float32 position and scale plus byte-encoded rotation, opacity and degree-0 colour. The format cannot store higher-order spherical harmonics. Ordinary XYZ point clouds are rejected.
+GPU inference is serialized, with one pending job and a 210 second worker timeout. Each model runs in a subprocess so its GPU memory is released after inference. Uploaded photos and intermediate PLY files are deleted immediately after the job. Downloadable job artifacts expire after 30 minutes and all interrupted jobs are removed at restart. Each successful `.splat` and its JSON metadata are also saved permanently to `ENTROPI_SAVE_DIR`, or `jobs/saved` by default. A `.splat` includes every predicted Gaussian, with float32 position and scale plus byte-encoded rotation, opacity and degree-0 colour. The format cannot store higher-order spherical harmonics. Ordinary XYZ point clouds are rejected.
 
 SHARP's model is under Apple's Machine Learning Research Model license; the DA3 Giant weights are under CC BY-NC 4.0. This configuration is for the existing personal research camera. Review those model licenses before changing the use to a commercial product. Code and model repositories are pinned in `model-requirements.txt`.
 

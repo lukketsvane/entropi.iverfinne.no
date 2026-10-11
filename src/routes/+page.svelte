@@ -296,7 +296,7 @@
 			// Preserve the original captured RGB in the local fallback and its PLY.
 			plyUrl = URL.createObjectURL(new Blob([pointCloudPLY(cloud)], { type: 'application/octet-stream' }));
 			downloadName = 'entropi-punktsky.ply';
-			announcement = `${pixels.registeredFrames ?? 1} av ${pixels.inputFrames ?? 1} bilete registrerte. Punktsky klar. Flytt hovudet for å sjå djupna. Dra for å rotere, knip med to fingrar for å zoome, og dra opp eller ned med to fingrar for visingsoppløysing. Tre fingrar justerer lysstyrke loddrett og kontrast vassrett. Dobbelttrykk for eit nytt bilete. Djupna er estimert.`;
+				announcement = `${pixels.registeredFrames ?? 1} av ${pixels.inputFrames ?? 1} bilete registrerte. Punktsky klar. Flytt hovudet for å sjå djupna. Dra for å rotere. Dra med to fingrar for å flytte scena, eller knip for å zoome. Hald to fingrar i ro eit kort augeblink, og dra deretter loddrett for talet på element eller vassrett for elementstorleik. Tre fingrar justerer opasitet loddrett og kontrast vassrett. Dobbelttrykk for eit nytt bilete. Djupna er estimert.`;
 			// Printing is independent of viewing: no dialog or failure can replace the cloud.
 			queueCurrentPrint();
 			startTracking();
@@ -480,7 +480,7 @@
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
 	<!-- Native keyboard/screen-reader alternatives stay invisible until focus. -->
-	<div class="cloud" class:hidden={mode !== 'done' || !viewerReady} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} onpointercancel={() => { cloudPointer = null; }} oncontextmenu={event => event.preventDefault()} role="img" aria-label="3D-scene. Hald inne utan å flytte fingeren for utskrift. Flytt hovudet for å sjå djupna. Dra for å rotere og knip med to fingrar for å zoome. Dra opp eller ned med to fingrar for visingsoppløysing. Dra med tre fingrar loddrett for lysstyrke og vassrett for kontrast. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
+	<div class="cloud" class:hidden={mode !== 'done' || !viewerReady} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} onpointercancel={() => { cloudPointer = null; }} oncontextmenu={event => event.preventDefault()} role="img" aria-label="3D-scene. Hald inne utan å flytte fingeren for utskrift. Flytt hovudet for å sjå djupna. Dra for å rotere. Dra med to fingrar for å flytte scena, eller knip for å zoome. Hald to fingrar i ro eit kort augeblink, og dra deretter loddrett for talet på element eller vassrett for elementstorleik. Dra med tre fingrar loddrett for opasitet og vassrett for kontrast. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
 		{#if plyUrl}<a class="access-control download" href={plyUrl} download={downloadName} aria-label="Last ned 3D-scena"><i class="download-mark" aria-hidden="true"></i></a>{/if}

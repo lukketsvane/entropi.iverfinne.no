@@ -68,6 +68,7 @@ export class PointCloudViewer {
       uniforms: {
         uHeight: { value: 900 },
         uSize: { value: cloud.radius * 0.0095 },
+        uOpacity: { value: 1 },
         uMode: { value: 0 },
         uRadius: { value: Math.max(0.01, cloud.radius) }
       },
@@ -91,6 +92,7 @@ export class PointCloudViewer {
       fragmentShader: [
         'precision mediump float;',
         'uniform float uMode;',
+        'uniform float uOpacity;',
         'varying vec3 vColor;',
         'varying vec3 vPosition;',
         'varying float vDepth;',
@@ -111,7 +113,7 @@ export class PointCloudViewer {
         '    vec3 phosphor = step(vec3(threshold), pow(clamp(vColor, 0.0, 1.0), vec3(0.67)));',
         '    rgb = phosphor * vec3(1.0, 0.94, 1.0);',
         '  }',
-        '  gl_FragColor = vec4(rgb, a * 0.97);',
+        '  gl_FragColor = vec4(rgb, a * 0.97 * uOpacity);',
         '  #include <colorspace_fragment>',
         '}'
       ].join('\n'),
@@ -127,6 +129,14 @@ export class PointCloudViewer {
     this.gestures = attachViewerGestures(this.renderer.domElement, {
       onDensity: value => { geometry.setDrawRange(0, Math.max(1, Math.round(cloud.count * value))); this.dirty = true; },
       onSize: value => this.setPointSize(value),
+      onOpacity: value => { material.uniforms.uOpacity.value = value; this.dirty = true; },
+      onPan: (x, y) => {
+        const distance = this.camera.position.distanceTo(this.controls.target);
+        const scale = 2 * distance * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) / Math.max(1, this.renderer.domElement.clientHeight);
+        const shift = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).multiplyScalar(-x * scale);
+        shift.addScaledVector(new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion), y * scale);
+        this.camera.position.add(shift); this.controls.target.add(shift); this.controls.update(); this.dirty = true;
+      },
       onPinch: scale => {
         const offset = this.camera.position.clone().sub(this.controls.target);
         offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale ** 2, this.controls.minDistance, this.controls.maxDistance) / offset.length());
