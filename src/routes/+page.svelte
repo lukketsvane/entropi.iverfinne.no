@@ -2,7 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { updated } from '$app/state';
 	import { DepthEstimator } from '../lib/pointcloud/estimator.mjs';
-	import { PointCloudViewer } from '../lib/pointcloud/viewer.mjs';
+	import { createPointCloudViewer } from '../lib/pointcloud/viewer.mjs';
 	import { Viewfinder } from '../lib/pointcloud/viewfinder.mjs';
 	import { FrameRecorder } from '../lib/pointcloud/recorder.mjs';
 	import { imageToPointCloud, pointCloudPLY, pointStride } from '../../static/pointcloud/math.mjs';
@@ -18,7 +18,7 @@
 	let cloudHost: HTMLDivElement;
 	let stream: MediaStream | null = null;
 	let preview: Viewfinder | null = null;
-	let viewer: PointCloudViewer | null = null;
+	let viewer: ReturnType<typeof createPointCloudViewer> | null = null;
 	const estimator = new DepthEstimator();
 	let mode = $state<'camera' | 'recording' | 'working' | 'done' | 'error'>('camera');
 	let announcement = $state('Trykk for eitt bilete. Hald inne medan du panorerer, og slepp for å lage ei punktsky.');
@@ -143,17 +143,12 @@
 			clearResult(); captured = null; progress = null; mode = 'working';
 			showPixels(frames[0]); stopCamera();
 			announcement = frames.length > 1 ? 'Set saman overlappande bilete.' : 'Lagar punktsky.';
-			// Keep one real frame before transferring the other ArrayBuffers to
-			// the worker. A failed stitch must not leave an empty capture.
-			const fallback = frames.length > 1
-				? { ...frames[0], data: new Uint8ClampedArray(frames[0].data) }
-				: frames[0];
+			const fallback = frames.length > 1 ? { ...captureSnapshot(frames[0]), data: new Uint8ClampedArray(frames[0].data) } : frames[0];
 			let result: Capture;
-			try {
-				result = await stitch(frames);
-			} catch (error) {
+			try { result = await stitch(frames); }
+			catch (error) {
 				if (disposed || id !== generation) return;
-				result = { ...fallback, inputFrames: frames.length, registeredFrames: 1 };
+				result = { ...captureSnapshot(fallback), inputFrames: frames.length, registeredFrames: 1 };
 				announcement = 'Panoramaet kunne ikkje registrerast. Brukar det første kamerabiletet.';
 				console.warn('Panorama registration failed, using captured frame:', error);
 			}
@@ -184,7 +179,7 @@
 			mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
 			await tick();
 			if (disposed || id !== generation || !cloudHost) return;
-			viewer = new PointCloudViewer(cloudHost, cloud, error => fail(error, id));
+			viewer = createPointCloudViewer(cloudHost, cloud, error => fail(error, id));
 			viewer.setStyle('mono');
 			// Export what is shown: grayscale colours and estimated relative XYZ.
 			for (let i = 0; i < cloud.count; i++) {

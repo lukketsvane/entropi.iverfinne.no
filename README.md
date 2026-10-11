@@ -14,6 +14,8 @@ Dra med éin finger for å rotere, bruk to fingrar for zoom og panorering. Dobbe
 
 Første berekning lastar ned den offentlege, versjonsfesta ONNX-modellen (27,3 MB frå Hugging Face) og WASM-runtime (14,2 MB frå jsDelivr). Begge blir kontrollerte mot SHA-256 i `static/pointcloud/models/manifest.json` før bruk og blir mellomlagra lokalt dersom lagringsplass er tilgjengeleg. Ingen bilete blir lasta opp av framsida. Inndata beheld retninga og sideforholdet, med tensorstorleikar delelege på 14 og maksimalt 420 piksel. Kameraet og GPU-visinga blir frigjorde når ein tek nytt bilete eller forlèt sida.
 
+Visaren bruker WebGL2 når det er tilgjengeleg, og projiserer dei same ekte XYZ-punkta med Canvas 2D dersom nettlesaren ikkje kan opprette ein GPU-kontekst. Rotering og zoom verkar i begge. Den vesle søkjaren har òg optisk forvrenging i 2D-reserven. På skrivebordet kan eit bilete limast inn utan ein ekstra synleg kontroll.
+
 ## TripoSplat på GPU
 
 Den eksisterande TripoSplat-flyten er bevart på `/triposplat`. Her blir biletet sendt via `/triposplat/api/jobs` til GPU-tenaren, og resultatet vert vist som ei interaktiv punktsky frå Gaussian-splat-fila. Dette **krev ein køyrande TripoSplat-backend** og miljøvariablane `TRIPOSPLAT_BACKEND_URL` og `TRIPOSPLAT_BACKEND_TOKEN` på Vercel. Original `.splat` kan lastast ned. Backend-rutene, diagnostikken og visaren blir haldne uendra.

@@ -1,7 +1,14 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import {CanvasPointCloudViewer} from './canvas-viewer.mjs';
 
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
+
+/** @param {HTMLElement} host @param {PointCloud} cloud @param {(error:Error)=>void} onError */
+export function createPointCloudViewer(host,cloud,onError) {
+  try {return new PointCloudViewer(host,cloud,onError);}
+  catch {return new CanvasPointCloudViewer(host,cloud);}
+}
 
 /**
  * Lightweight immersive point-cloud renderer. Three visual treatments share the

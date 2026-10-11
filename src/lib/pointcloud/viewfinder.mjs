@@ -7,6 +7,17 @@ export class Viewfinder {
     canvas.width = 240; canvas.height = 360;
     this.gl = canvas.getContext('webgl', {alpha:false,antialias:false,powerPreference:'low-power',preserveDrawingBuffer:false});
     this.fallback = this.gl ? null : canvas.getContext('2d');
+    if(this.fallback) {
+      this.sampleCanvas=document.createElement('canvas');this.sampleCanvas.width=canvas.width;this.sampleCanvas.height=canvas.height;
+      this.sampleContext=this.sampleCanvas.getContext('2d',{willReadFrequently:true});
+      this.output=new ImageData(canvas.width,canvas.height);this.warp=new Int32Array(canvas.width*canvas.height).fill(-1);this.shade=new Float32Array(this.warp.length);
+      for(let y=0;y<canvas.height;y++)for(let x=0;x<canvas.width;x++) {
+        const qx=(x+.5)/canvas.width*2-1,qy=(y+.5)/canvas.height*2-1,r=qx*qx+qy*qy;
+        const sx=(qx*(1+.28*r)*.5+.5)*canvas.width,sy=(qy*(1+.28*r)*.5+.5)*canvas.height,i=y*canvas.width+x;
+        if(sx>=0&&sx<canvas.width&&sy>=0&&sy<canvas.height)this.warp[i]=(Math.floor(sy)*canvas.width+Math.floor(sx))*4;
+        this.shade[i]=(1-.36*r)*(.95+.05*Math.sin((y+.5)*Math.PI));this.output.data[i*4+3]=255;
+      }
+    }
     const gl = this.gl;
     if (gl) {
       /** @param {number} type @param {string} code */
@@ -74,9 +85,16 @@ export class Viewfinder {
         gl.uniform2f(this.crop ?? null,Math.min(1,1/ratio),Math.min(1,ratio));gl.uniform1f(this.time ?? null,time/1000);
         gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
       } catch { /* A camera frame can briefly disappear when iOS backgrounds the app. */ }
-    } else if(this.fallback) {
-      this.fallback.filter='grayscale(1) contrast(1.2)';
-      this.fallback.drawImage(source,0,0,this.canvas.width,this.canvas.height);
+    } else if(this.fallback&&this.sampleCanvas&&this.sampleContext&&this.output&&this.warp&&this.shade) {
+      const ratio=width/height/(this.canvas.width/this.canvas.height),cw=width*Math.min(1,1/ratio),ch=height*Math.min(1,ratio);
+      this.sampleContext.drawImage(source,(width-cw)/2,(height-ch)/2,cw,ch,0,0,this.canvas.width,this.canvas.height);
+      const input=this.sampleContext.getImageData(0,0,this.canvas.width,this.canvas.height).data,output=this.output.data;
+      for(let i=0;i<this.warp.length;i++) {
+        const at=this.warp[i];let gray=0;
+        if(at>=0)gray=((input[at]*.299+input[at+1]*.587+input[at+2]*.114)-18)*1.2*this.shade[i]+((i*13+Math.floor(time/55)*17)%19-9)*.35;
+        output[i*4]=output[i*4+1]=output[i*4+2]=gray;
+      }
+      this.fallback.putImageData(this.output,0,0);
     }
   }
   dispose() {
