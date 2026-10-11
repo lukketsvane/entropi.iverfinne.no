@@ -21,8 +21,8 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 def gaussian_ply(path):
     names = ["x", "y", "z"] + [f"f_dc_{i}" for i in range(3)] + ["opacity"] + [f"scale_{i}" for i in range(3)] + [f"rot_{i}" for i in range(4)]
-    vertices = np.zeros(2, dtype=[(name, "f4") for name in names])
-    vertices["x"] = [1, float("nan")]
+    vertices = np.zeros(1, dtype=[(name, "f4") for name in names])
+    vertices["x"] = 1
     vertices["y"] = 2
     vertices["z"] = 3
     vertices["scale_0"] = np.log(.2)
@@ -30,6 +30,7 @@ def gaussian_ply(path):
     vertices["scale_2"] = np.log(.4)
     vertices["rot_0"] = 1
     PlyData([PlyElement.describe(vertices, "vertex")]).write(path)
+    return vertices
 
 
 class GaussianPacking(unittest.TestCase):
@@ -43,6 +44,18 @@ class GaussianPacking(unittest.TestCase):
             np.testing.assert_allclose(values[3:6], [.2, .3, .4], rtol=1e-6)
             self.assertEqual(values[6:10], (128, 128, 128, 128))
             self.assertEqual(values[10:], (255, 128, 128, 128))
+
+    def test_low_opacity_gaussian_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "input.ply", Path(directory) / "scene.splat"
+            vertices = gaussian_ply(source)
+            faint = vertices.copy()
+            faint["x"] = 4
+            faint["opacity"] = -10
+            PlyData([PlyElement.describe(np.concatenate([vertices, faint]), "vertex")]).write(source)
+            self.assertEqual(pack_ply(source, output), 2)
+            self.assertEqual(len(output.read_bytes()), 64)
+            self.assertEqual(struct.unpack_from("<f", output.read_bytes(), 32)[0], 4)
 
     def test_plain_xyz_point_cloud_cannot_impersonate_gaussian_output(self):
         with tempfile.TemporaryDirectory() as directory:

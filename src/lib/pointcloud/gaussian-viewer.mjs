@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {HeadParallax} from './head-parallax.mjs';
+import {attachViewerGestures, noAdjust} from './viewer-gestures.ts';
 
 /** @typedef {{position:number[],target:number[],up:number[],fov:number,aspect?:number}} SceneCamera */
 
 /** Render covariance, orientation, opacity and colour, rather than converting Gaussians to dots.
  * @param {HTMLElement} host @param {Uint8Array} bytes @param {SceneCamera} initial
  * @param {(error:Error)=>void} onError @param {AbortSignal} signal */
-export async function createGaussianViewer(host, bytes, initial, onError, signal) {
+export async function createGaussianViewer(host, bytes, initial, onError, signal, onAdjust = noAdjust) {
   const {SparkRenderer, SplatMesh} = await import('@sparkjsdev/spark');
   signal.throwIfAborted();
   const renderer = new THREE.WebGLRenderer({antialias: false, alpha: false, powerPreference: 'high-performance'});
@@ -17,13 +18,27 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
   const camera = new THREE.PerspectiveCamera(55, 1, .01, 1000);
   const spark = new SparkRenderer({renderer, maxStdDev: Math.sqrt(8), minAlpha: 1 / 255});
   scene.add(spark);
-  const mesh = new SplatMesh({fileBytes: bytes, fileName: 'scene.splat'});
+  const mesh = new SplatMesh({fileBytes: bytes, fileName: 'scene.splat', lod: true, enableLod: false});
   // Both model pipelines export OpenCV coordinates (x right, y down, z forward).
   mesh.rotation.x = Math.PI;
   scene.add(mesh);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.dampingFactor = .08;
   controls.rotateSpeed = .4; controls.zoomSpeed = .65;
+  const gestures = attachViewerGestures(renderer.domElement, {
+    onDensity(value) {
+      mesh.enableLod = value < 0.999;
+      spark.lodSplatCount = Math.max(1, Math.round(mesh.numSplats * value));
+      spark.setDirty();
+    },
+    onPinch(scale) {
+      const offset = camera.position.clone().sub(controls.target);
+      offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale, controls.minDistance, controls.maxDistance) / offset.length());
+      camera.position.copy(controls.target).add(offset);
+      controls.update();
+    },
+    onAdjust
+  });
   const parallax = new HeadParallax();
   const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
   let disposed = false, animation = 0;
@@ -36,7 +51,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
     disposed = true; cancelAnimationFrame(animation); observer?.disconnect();
     signal.removeEventListener('abort', dispose);
     renderer.domElement.removeEventListener('webglcontextlost', lost);
-    controls.dispose(); mesh.dispose(); spark.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
+    gestures.dispose(); controls.dispose(); mesh.dispose(); spark.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
   }
   signal.addEventListener('abort', dispose, {once: true});
   renderer.domElement.addEventListener('webglcontextlost', lost);
@@ -83,6 +98,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
         if (!context) throw new Error('Kunne ikkje klargjere Gaussian-utskrifta.');
         // Re-render synchronously so iOS has not discarded the drawing buffer.
         renderer.render(scene, camera);
+        context.filter = gestures.state.filter;
         context.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height);
         return canvas;
       },

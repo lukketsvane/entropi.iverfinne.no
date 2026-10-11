@@ -34,10 +34,14 @@ def predict_multiview(images, output):
     import numpy as np
     import torch
     from depth_anything_3.api import DepthAnything3
+    from depth_anything_3.utils.gsply_helpers import save_gaussian_ply
     model = DepthAnything3.from_pretrained(DA3_MODEL).to("cuda")
     with torch.inference_mode():
         prediction = model.inference(image=[str(path) for path in images], infer_gs=True,
-            process_res=504, export_dir=str(output), export_format="gs_ply")
+            process_res=504)
+        depth = torch.from_numpy(prediction.depth).unsqueeze(-1).to(prediction.gaussians.means)
+        save_gaussian_ply(prediction.gaussians, str(output / "scene.ply"), depth,
+            prune_by_depth_percent=1.0, prune_border_gs=False)
     extrinsic = np.asarray(prediction.extrinsics[0], dtype=np.float64)
     rotation, translation = extrinsic[:3, :3], extrinsic[:3, 3].copy()
     scale = getattr(prediction, "scale_factor", None)
@@ -49,7 +53,7 @@ def predict_multiview(images, output):
     up = rotation.T @ np.array([0, -1, 0])
     height, width = prediction.depth.shape[-2:]
     focal = float(prediction.intrinsics[0][1, 1])
-    return {"model": "Depth Anything 3 Nested Giant Large 1.1", "ply": "gs_ply/0000.ply", "camera": {"position": position.tolist(), "target": target.tolist(), "up": up.tolist(),
+    return {"model": "Depth Anything 3 Nested Giant Large 1.1", "ply": "scene.ply", "camera": {"position": position.tolist(), "target": target.tolist(), "up": up.tolist(),
         "fov": math.degrees(2 * math.atan(height / (2 * focal))), "aspect": width / height}}
 
 

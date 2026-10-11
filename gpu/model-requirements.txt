@@ -1,3 +1,2 @@
 sharp @ git+https://github.com/apple-aiml-research/ml-sharp.git@aed6527499ef91cba3b54c18d49a870f25947190
 depth-anything-3 @ git+https://github.com/ByteDance-Seed/Depth-Anything-3.git@3d835ec1a5802d64a8b8b15f817a1ab54809bfe4
-gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70
