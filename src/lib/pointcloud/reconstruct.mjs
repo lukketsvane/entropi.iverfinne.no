@@ -6,7 +6,7 @@ export const MAX_UPLOAD = 4_000_000;
 export const ARTIFACT_CHUNK = 2_000_000;
 export const MAX_ARTIFACT = 96_000_000;
 const JOB_ID = /^[a-zA-Z0-9_-]{8,128}$/;
-export const processResolution = (density = .7) => density < .45 ? 336 : density < .8 ? 420 : 504;
+export const processResolution = (density = .7) => density < .15 ? 168 : density < .3 ? 224 : density < .45 ? 336 : density < .8 ? 420 : 504;
 /** @typedef {{data:Uint8ClampedArray,width:number,height:number}} Pixels */
 /** @typedef {{percent?:number,phase:string}} Progress */
 

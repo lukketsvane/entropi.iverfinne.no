@@ -137,7 +137,7 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
     @app.post("/api/reconstruct/jobs", status_code=202, dependencies=[Depends(authorize)])
     async def create(images: list[UploadFile] = File(), process_res: int = Form(420)):
         cleanup()
-        if process_res not in (336, 420, 504):
+        if process_res not in (168, 224, 336, 420, 504):
             raise HTTPException(400, "Unsupported model resolution")
         if not available:
             raise HTTPException(503, "CUDA or model dependencies are unavailable")

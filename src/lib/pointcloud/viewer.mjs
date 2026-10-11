@@ -43,7 +43,9 @@ export class PointCloudViewer {
     this.controls.zoomSpeed = 0.7;
     this.controls.enablePan = true;
     this.controls.minDistance = cloud.radius * 0.28;
-    this.controls.maxDistance = cloud.radius * 12;
+    this.controls.maxDistance = cloud.radius * 1000;
+    this.camera.far = Math.max(100, this.controls.maxDistance + cloud.radius * 2);
+    this.camera.updateProjectionMatrix();
     this.controls.touches.ONE = THREE.TOUCH.ROTATE;
     this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
     this.controls.autoRotate = !this.reducedMotion;
@@ -80,7 +82,7 @@ export class PointCloudViewer {
         'void main() {',
         '  vec4 view = modelViewMatrix * vec4(position, 1.0);',
         '  gl_Position = projectionMatrix * view;',
-        '  gl_PointSize = clamp(uSize * uHeight / max(0.01, -view.z), 1.0, 5.5);',
+        '  gl_PointSize = clamp(uSize * uHeight / max(0.01, -view.z), 0.25, 24.0);',
         '  vColor = color;',
         '  vPosition = position;',
         '  vDepth = clamp(0.5 + position.z / (2.0 * uRadius), 0.0, 1.0);',
@@ -124,9 +126,10 @@ export class PointCloudViewer {
     this.scene.add(this.points);
     this.gestures = attachViewerGestures(this.renderer.domElement, {
       onDensity: value => { geometry.setDrawRange(0, Math.max(1, Math.round(cloud.count * value))); this.dirty = true; },
+      onSize: value => this.setPointSize(value),
       onPinch: scale => {
         const offset = this.camera.position.clone().sub(this.controls.target);
-        offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale, this.controls.minDistance, this.controls.maxDistance) / offset.length());
+        offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale ** 2, this.controls.minDistance, this.controls.maxDistance) / offset.length());
         this.camera.position.copy(this.controls.target).add(offset);
         this.controls.update(); this.dirty = true;
       },
@@ -192,7 +195,7 @@ export class PointCloudViewer {
   /** @param {number} multiplier */
   setPointSize(multiplier) {
     if (!Number.isFinite(multiplier)) return;
-    this.pointSize = Math.max(0.5, Math.min(2.2, multiplier));
+    this.pointSize = Math.max(0.02, Math.min(8, multiplier));
     this.points.material.uniforms.uSize.value = this.cloud.radius * 0.0095 * this.pointSize;
     this.dirty = true;
   }

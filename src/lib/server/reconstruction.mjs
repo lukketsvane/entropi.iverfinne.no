@@ -42,7 +42,7 @@ export function reconstructionProxy({request = fetch, env = process.env} = {}) {
       }
       catch { return failure('Kunne ikkje lese kamerabileta.', 400); }
       const processRes = requested.length ? requested[0] : '420';
-      if (requested.length > 1 || typeof processRes !== 'string' || !['336', '420', '504'].includes(processRes)) {
+      if (requested.length > 1 || typeof processRes !== 'string' || !['168', '224', '336', '420', '504'].includes(processRes)) {
         return failure('Ugyldig modelloppløysing.', 400);
       }
       if (!images.length || images.length > 6 || images.some(file => !(file instanceof File) || !['image/jpeg','image/png','image/webp'].includes(file.type) || !file.size)) {

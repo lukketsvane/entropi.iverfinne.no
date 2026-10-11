@@ -106,7 +106,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     }
   };
   return { ...exports.harness, harness: exports.harness, tap, requested, writes, paper,
-    enableBluetooth: () => { api = bluetooth; }, gaussianViews: () => gaussianViews,
+    enableBluetooth: () => { api = bluetooth; }, advancePointer: ms => { pointerTime += ms; }, gaussianViews: () => gaussianViews,
     holdResult: (move = 0) => {
       const down = {...event, clientX: 100, clientY: 200}; exports.harness.cloudDown(down);
       pointerTime += 600; exports.harness.cloudUp({...down, clientX: 100 + move});
@@ -157,6 +157,18 @@ test('orbiting the scene cannot accidentally print or open a device picker', asy
   assert.equal(camera.requested.length, 0); assert.equal(camera.writes.length, 0);
 });
 
+test('a two-finger viewer gesture cannot become a long-press print', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  camera.enableBluetooth();
+  camera.harness.cloudDown({isPrimary: true, pointerId: 1, clientX: 100, clientY: 200});
+  camera.harness.cloudDown({isPrimary: false, pointerId: 2, clientX: 200, clientY: 200});
+  camera.advancePointer(600);
+  camera.harness.cloudUp({pointerId: 1, clientX: 100, clientY: 200});
+  assert.equal(camera.requested.length, 0);
+  assert.equal(camera.writes.length, 0);
+});
+
 test('real Gaussian result uses its own artifact and print renderer rather than the depth fallback', async t => {
   const camera = fixture(true, {gaussian: true}); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.printer.ready);
@@ -197,6 +209,8 @@ test('holding the actual shutter prints one panorama on release', async t => {
 test('shake clears the displayed cloud, while a committed print survives clearing', async t => {
   const camera = fixture(true, { motionPermission: 'direct' }); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.printer.ready);
+  const start = camera.harness.printer.start.bind(camera.harness.printer);
+  camera.harness.printer.start = () => Promise.resolve(false);
   camera.harness.printer.suspend();
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
   assert.equal(camera.harness.printer.queue.length, 1); assert.equal(camera.writes.length, 0);
@@ -204,6 +218,7 @@ test('shake clears the displayed cloud, while a committed print survives clearin
   assert.equal(camera.harness.draft, null); assert.equal(camera.harness.download, ''); assert.equal(camera.previewSource(), null);
   await waitFor(() => camera.previewSource() === camera.video);
   assert.equal(camera.harness.printer.queue.length, 1);
+  camera.harness.printer.start = start;
   await camera.harness.printer.start(); await waitFor(() => camera.writes.length && !camera.harness.printer.busy);
   assert.deepEqual(joinBytes(camera.writes), camera.paper);
   camera.shake(); assert.equal(camera.harness.mode, 'camera'); assert.equal(camera.disposedViews(), 1);
