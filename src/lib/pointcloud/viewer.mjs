@@ -60,7 +60,7 @@ export class PointCloudViewer {
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uHeight: { value: 900 },
-        uSize: { value: cloud.radius * 0.012 },
+        uSize: { value: cloud.radius * 0.0095 },
         uMode: { value: 0 },
         uRadius: { value: Math.max(0.01, cloud.radius) }
       },
@@ -70,12 +70,14 @@ export class PointCloudViewer {
         'uniform float uSize;',
         'uniform float uRadius;',
         'varying vec3 vColor;',
+        'varying vec3 vPosition;',
         'varying float vDepth;',
         'void main() {',
         '  vec4 view = modelViewMatrix * vec4(position, 1.0);',
         '  gl_Position = projectionMatrix * view;',
-        '  gl_PointSize = clamp(uSize * uHeight / max(0.01, -view.z), 1.35, 7.0);',
+        '  gl_PointSize = clamp(uSize * uHeight / max(0.01, -view.z), 1.0, 5.5);',
         '  vColor = color;',
+        '  vPosition = position;',
         '  vDepth = clamp(0.5 + position.z / (2.0 * uRadius), 0.0, 1.0);',
         '}'
       ].join('\n'),
@@ -83,6 +85,7 @@ export class PointCloudViewer {
         'precision mediump float;',
         'uniform float uMode;',
         'varying vec3 vColor;',
+        'varying vec3 vPosition;',
         'varying float vDepth;',
         'void main() {',
         '  float d = length(gl_PointCoord - vec2(0.5));',
@@ -94,6 +97,13 @@ export class PointCloudViewer {
         '  vec3 depthColor = mix(farTone, nearTone, vDepth);',
         '  vec3 rgb = uMode < 0.5 ? vColor : (uMode < 1.5 ? silver : depthColor);',
         '  if (uMode > 2.5) rgb = vec3(0.32 + 0.68 * dot(vColor, vec3(0.299, 0.587, 0.114)));',
+        '  if (uMode > 3.5) {',
+        '    float seed = dot(vPosition, vec3(127.1, 311.7, 74.7));',
+        '    float dither = fract(sin(seed) * 43758.5453);',
+        '    float threshold = 0.22 + dither * 0.56;',
+        '    vec3 phosphor = step(vec3(threshold), pow(clamp(vColor, 0.0, 1.0), vec3(0.67)));',
+        '    rgb = phosphor * vec3(1.0, 0.94, 1.0);',
+        '  }',
         '  gl_FragColor = vec4(rgb, a * 0.97);',
         '  #include <colorspace_fragment>',
         '}'
@@ -149,11 +159,11 @@ export class PointCloudViewer {
     this.animation = requestAnimationFrame(frame);
   }
 
-  /** @param {'color' | 'silver' | 'depth' | 'mono'} style */
+  /** @param {'color' | 'silver' | 'depth' | 'mono' | 'crt'} style */
   setStyle(style) {
-    if (!['color', 'silver', 'depth', 'mono'].includes(style)) return;
+    if (!['color', 'silver', 'depth', 'mono', 'crt'].includes(style)) return;
     this.style = style;
-    this.points.material.uniforms.uMode.value = { color: 0, silver: 1, depth: 2, mono: 3 }[style];
+    this.points.material.uniforms.uMode.value = { color: 0, silver: 1, depth: 2, mono: 3, crt: 4 }[style];
     this.dirty = true;
   }
 
@@ -161,7 +171,7 @@ export class PointCloudViewer {
   setPointSize(multiplier) {
     if (!Number.isFinite(multiplier)) return;
     this.pointSize = Math.max(0.5, Math.min(2.2, multiplier));
-    this.points.material.uniforms.uSize.value = this.cloud.radius * 0.012 * this.pointSize;
+    this.points.material.uniforms.uSize.value = this.cloud.radius * 0.0095 * this.pointSize;
     this.dirty = true;
   }
 

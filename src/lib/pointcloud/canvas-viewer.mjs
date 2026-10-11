@@ -64,12 +64,20 @@ export class CanvasPointCloudViewer {
       const x=this.projected[i*3],y=this.projected[i*3+1],depth=this.projected[i*3+2];
       if(depth<.01||x<0||x>width||y<0||y>height)continue;
       const at=this.indices[i]*3;
-      if(this.style==='color')ctx.fillStyle=`rgb(${colors[at]},${colors[at+1]},${colors[at+2]})`;
+      if(this.style==='crt') {
+        // Same limited RGB phosphor palette as the WebGL renderer.
+        const seed=positions[at]*127.1+positions[at+1]*311.7+positions[at+2]*74.7;
+        const raw=Math.sin(seed)*43758.5453;
+        const threshold=.22+(raw-Math.floor(raw))*.56;
+        const phosphor=[0,1,2].map(c=>Math.pow(colors[at+c]/255,.67)>=threshold?255:0);
+        ctx.fillStyle=`rgb(${phosphor[0]},${Math.round(phosphor[1]*.94)},${phosphor[2]})`;
+      }
+      else if(this.style==='color')ctx.fillStyle=`rgb(${colors[at]},${colors[at+1]},${colors[at+2]})`;
       else {const gray=Math.round(92+(colors[at]*.299+colors[at+1]*.587+colors[at+2]*.114)*.64);ctx.fillStyle=`rgb(${gray},${gray},${gray})`;}
-      const size=Math.max(1,Math.min(5,radius*.011*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
+      const size=Math.max(1,Math.min(4,radius*.0087*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
     }
   }
-  /** @param {'color'|'silver'|'depth'|'mono'} style */ setStyle(style){this.style=style;this.dirty=true;}
+  /** @param {'color'|'silver'|'depth'|'mono'|'crt'} style */ setStyle(style){this.style=style;this.dirty=true;}
   /** @param {number} size */ setPointSize(size){this.pointSize=size;this.dirty=true;}
   reset(){this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.dirty=true;}
   dispose(){

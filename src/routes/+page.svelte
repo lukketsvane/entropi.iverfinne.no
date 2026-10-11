@@ -180,12 +180,8 @@
 			await tick();
 			if (disposed || id !== generation || !cloudHost) return;
 			viewer = createPointCloudViewer(cloudHost, cloud, error => fail(error, id));
-			viewer.setStyle('mono');
-			// Export what is shown: grayscale colours and estimated relative XYZ.
-			for (let i = 0; i < cloud.count; i++) {
-				const at = i * 3, gray = Math.round(cloud.colors[at] * .299 + cloud.colors[at + 1] * .587 + cloud.colors[at + 2] * .114);
-				cloud.colors[at] = cloud.colors[at + 1] = cloud.colors[at + 2] = gray;
-			}
+			viewer.setStyle('crt');
+			// Preserve captured RGB in PLY. The limited CRT palette is display-only.
 			plyUrl = URL.createObjectURL(new Blob([pointCloudPLY(cloud)], { type: 'application/octet-stream' }));
 			announcement = `${pixels.registeredFrames ?? 1} av ${pixels.inputFrames ?? 1} bilete registrerte. Punktsky klar. Dra for å rotere, bruk to fingrar for å zoome. Dobbelttrykk for eit nytt bilete. Djupna er estimert.`;
 		} catch (error) { fail(error, id); }
