@@ -9,8 +9,9 @@ function canvas() {
     addEventListener(type, listener) { listeners.set(type, listener); },
     removeEventListener(type) { listeners.delete(type); },
     setPointerCapture() {},
-    send(type, pointerId, x, y, timeStamp = 0) {
-      const event = {pointerType: 'touch', pointerId, clientX: x, clientY: y, timeStamp, stopped: false, prevented: false,
+    getBoundingClientRect() { return {left: 10, top: 20}; },
+    send(type, pointerId, x, y) {
+      const event = {pointerType: 'touch', pointerId, clientX: x, clientY: y, stopped: false, prevented: false,
         stopImmediatePropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; }};
       listeners.get(type)(event);
       return event;
@@ -18,118 +19,147 @@ function canvas() {
   };
 }
 
-test('two-finger hold then vertical pan changes display density and reports it on release', () => {
-  const surface = canvas(), density = [], pinch = [], messages = [];
-  const gestures = attachViewerGestures(surface, {onDensity: value => density.push(value), onPinch: value => pinch.push(value), onAdjust: value => messages.push(value)});
-  surface.send('pointerdown', 1, 100, 300);
-  assert.equal(surface.send('pointerdown', 2, 300, 300).prevented, true);
-  surface.send('pointermove', 1, 100, 315, 500);
-  surface.send('pointermove', 2, 300, 315, 510);
-  assert.ok(density.at(-1) < 1);
-  assert.ok(density.at(-1) < .75);
-  assert.deepEqual(pinch, []);
-  surface.send('pointerup', 2, 300, 315);
-  surface.send('pointerup', 1, 100, 315);
-  assert.match(messages[0], /Viste element 70 prosent av full mengd/);
+function callbacks() {
+  const rotate = [], transform = [], density = [], definition = [], touch = [], adjust = [];
+  return {rotate, transform, density, definition, touch, adjust,
+    options: {
+      onRotate: (...values) => rotate.push(values),
+      onTransform: (...values) => transform.push(values),
+      onDensity: value => density.push(value),
+      onDefinition: value => definition.push(value),
+      onTouch: value => touch.push(value),
+      onAdjust: (...values) => adjust.push(values)
+    }};
+}
+
+test('staggered two-finger drag pans without locking into pinch', () => {
+  const surface = canvas(), calls = callbacks();
+  const gestures = attachViewerGestures(surface, calls.options);
+  assert.equal(surface.send('pointerdown', 1, 100, 300).stopped, false);
+  assert.equal(surface.send('pointerdown', 2, 300, 300).stopped, false);
+  assert.equal(surface.send('pointermove', 1, 120, 300).stopped, true);
+  surface.send('pointermove', 2, 320, 300);
+  assert.equal(calls.transform.length, 2);
+  assert.equal(calls.transform.reduce((sum, [dx]) => sum + dx, 0), 20);
+  assert.ok(Math.abs(calls.transform.reduce((scale, [, , ratio]) => scale * ratio, 1) - 1) < 1e-9);
+  assert.deepEqual(calls.transform[0].slice(3), [200, 280]);
+  assert.deepEqual(calls.density, []);
+  assert.deepEqual(calls.definition, []);
+  assert.equal(surface.send('pointerup', 2, 320, 300).stopped, false);
+  surface.send('pointerup', 1, 120, 300);
+  assert.deepEqual(calls.touch, [true, false]);
   gestures.dispose();
 });
 
-test('a long downward pan reaches a near-empty splat budget while preserving capture quality range', () => {
-  const surface = canvas(), density = [], quality = [];
-  const gestures = attachViewerGestures(surface, {onDensity: value => density.push(value), onPinch() {}, onAdjust: (_, value) => quality.push(value)});
+test('two-finger movement combines pan and pinch', () => {
+  const surface = canvas(), calls = callbacks();
+  const gestures = attachViewerGestures(surface, calls.options);
+  surface.send('pointerdown', 1, 100, 300);
+  surface.send('pointerdown', 2, 300, 300);
+  surface.send('pointermove', 1, 80, 300);
+  surface.send('pointermove', 2, 340, 300);
+  assert.equal(calls.transform.reduce((sum, [dx]) => sum + dx, 0), 10);
+  assert.ok(Math.abs(calls.transform.reduce((scale, [, , ratio]) => scale * ratio, 1) - 1.3) < 1e-9);
+  assert.deepEqual(calls.rotate, []);
+  gestures.dispose();
+  assert.deepEqual(calls.touch, [true, false]);
+});
+
+test('one, two and three finger transitions preserve deltas and resume rotation', () => {
+  const surface = canvas(), calls = callbacks();
+  const gestures = attachViewerGestures(surface, calls.options);
+  surface.send('pointerdown', 1, 100, 300);
+  surface.send('pointermove', 1, 110, 300);
+  surface.send('pointerdown', 2, 300, 300);
+  surface.send('pointermove', 1, 120, 300);
+  surface.send('pointerdown', 3, 200, 400);
+  surface.send('pointermove', 3, 200, 406);
+  surface.send('pointerup', 3, 200, 406);
+  surface.send('pointermove', 2, 310, 300);
+  surface.send('pointerup', 2, 310, 300);
+  surface.send('pointermove', 1, 130, 300);
+  assert.deepEqual(calls.rotate, [[10, 0], [10, 0]]);
+  assert.equal(calls.transform.length, 2);
+  assert.deepEqual(calls.touch, [true]);
+  surface.send('pointercancel', 1, 130, 300);
+  assert.deepEqual(calls.touch, [true, false]);
+  gestures.dispose();
+});
+
+test('three-finger vertical drag changes density and next capture quality only', () => {
+  const surface = canvas(), calls = callbacks();
+  const gestures = attachViewerGestures(surface, calls.options);
   surface.send('pointerdown', 1, 100, 100);
-  surface.send('pointerdown', 2, 300, 100);
-  for (let y = 130; y <= 640; y += 30) {
-    surface.send('pointermove', 1, 100, y, 500 + y);
-    surface.send('pointermove', 2, 300, y, 510 + y);
+  surface.send('pointerdown', 2, 200, 100);
+  surface.send('pointerdown', 3, 300, 100);
+  for (let y = 136; y <= 640; y += 36) {
+    surface.send('pointermove', 1, 100, y);
+    surface.send('pointermove', 2, 200, y);
+    surface.send('pointermove', 3, 300, y);
   }
-  assert.ok(density.at(-1) < .00001);
-  surface.send('pointerup', 2, 300, 640);
+  assert.ok(calls.density.at(-1) < .00001);
+  assert.deepEqual(calls.definition, []);
+  assert.deepEqual(calls.transform, []);
+  surface.send('pointerup', 3, 300, 640);
+  surface.send('pointerup', 2, 200, 640);
   surface.send('pointerup', 1, 100, 640);
-  assert.ok(quality.at(-1) < .1);
+  assert.ok(calls.adjust[0][1] < .1);
+  assert.match(calls.adjust[0][0], /Viste element .* Punktskarpleik/);
   gestures.dispose();
 });
 
-test('two-finger hold then horizontal pan changes splat size without zooming or changing count', () => {
-  const surface = canvas(), density = [], pinch = [], size = [], quality = [];
-  const gestures = attachViewerGestures(surface, {onDensity: value => density.push(value), onPinch: value => pinch.push(value), onSize: value => size.push(value), onAdjust: (_, value) => quality.push(value)});
-  surface.send('pointerdown', 1, 100, 300);
-  assert.equal(surface.send('pointerdown', 2, 200, 300).stopped, false);
-  surface.send('pointermove', 1, 70, 300, 500);
-  surface.send('pointermove', 2, 170, 300, 510);
-  surface.send('pointermove', 1, 0, 300, 520);
-  assert.equal(surface.send('pointermove', 2, 100, 300, 530).stopped, true);
-  assert.ok(size.at(-1) < .5);
-  assert.deepEqual(density, []);
-  assert.deepEqual(pinch, []);
-  surface.send('pointerup', 2, 100, 300);
-  surface.send('pointerup', 1, 0, 300);
-  assert.deepEqual(quality, [null]);
-  gestures.dispose();
-});
-
-test('pinching zooms without changing density', () => {
-  const surface = canvas(), density = [], pinch = [];
-  const gestures = attachViewerGestures(surface, {onDensity: value => density.push(value), onPinch: value => pinch.push(value)});
-  surface.send('pointerdown', 1, 100, 300);
-  surface.send('pointerdown', 2, 300, 300);
-  surface.send('pointermove', 1, 80, 300, 50);
-  surface.send('pointermove', 2, 320, 300, 60);
-  assert.deepEqual(density, []);
-  assert.ok(pinch.some(value => value > 1));
-  gestures.dispose();
-});
-
-test('pinching after a two-finger hold still zooms', () => {
-  const surface = canvas(), density = [], size = [], pinch = [], pan = [];
-  const gestures = attachViewerGestures(surface, {onDensity: value => density.push(value), onSize: value => size.push(value), onPinch: value => pinch.push(value), onPan: (x, y) => pan.push([x, y])});
-  surface.send('pointerdown', 1, 100, 300);
-  surface.send('pointerdown', 2, 300, 300);
-  surface.send('pointermove', 1, 80, 300, 500);
-  surface.send('pointermove', 2, 320, 300, 510);
-  assert.ok(pinch.some(value => value > 1));
-  assert.deepEqual(density, []);
-  assert.deepEqual(size, []);
-  assert.deepEqual(pan, []);
-  gestures.dispose();
-});
-
-test('ordinary two-finger drag pans without changing count, size or zoom', () => {
-  const surface = canvas(), pan = [], density = [], size = [], pinch = [];
-  const gestures = attachViewerGestures(surface, {onDensity: value => density.push(value), onSize: value => size.push(value), onPinch: value => pinch.push(value), onPan: (x, y) => pan.push([x, y])});
-  surface.send('pointerdown', 1, 100, 300);
-  surface.send('pointerdown', 2, 300, 300);
-  surface.send('pointermove', 1, 115, 310, 50);
-  surface.send('pointermove', 2, 315, 310, 60);
-  surface.send('pointermove', 1, 135, 335, 75);
-  surface.send('pointermove', 2, 335, 335, 85);
-  assert.ok(pan.length > 0);
-  assert.ok(pan.reduce((sum, [x]) => sum + x, 0) > 0);
-  assert.ok(pan.reduce((sum, [, y]) => sum + y, 0) > 0);
-  assert.deepEqual(density, []);
-  assert.deepEqual(size, []);
-  assert.deepEqual(pinch, []);
-  gestures.dispose();
-});
-
-test('three-finger pan changes scene opacity vertically and contrast horizontally', () => {
-  const surface = canvas(), messages = [], opacity = [], quality = [];
-  const gestures = attachViewerGestures(surface, {onDensity() {}, onPinch() {}, onOpacity: value => opacity.push(value), onAdjust: (message, value) => { messages.push(message); quality.push(value); }});
+test('a lower selected detail level continues from its visible density', () => {
+  const surface = canvas(), calls = callbacks();
+  const gestures = attachViewerGestures(surface, {...calls.options, initialDensity: .38});
   surface.send('pointerdown', 1, 100, 300);
   surface.send('pointerdown', 2, 200, 300);
   surface.send('pointerdown', 3, 300, 300);
-  surface.send('pointermove', 1, 125, 325);
-  surface.send('pointermove', 2, 225, 325);
-  surface.send('pointermove', 3, 325, 325);
-  assert.ok(gestures.state.opacity < 1);
-  assert.equal(opacity.at(-1), gestures.state.opacity);
-  assert.ok(gestures.state.contrast > 1);
-  assert.match(surface.style.filter, /^contrast\(.+\)$/);
-  surface.send('pointerup', 3, 325, 325);
-  surface.send('pointerup', 2, 225, 325);
-  surface.send('pointerup', 1, 125, 325);
-  assert.match(messages[0], /Opasitet .* Kontrast/);
-  assert.deepEqual(quality, [null]);
+  surface.send('pointermove', 1, 100, 360);
+  surface.send('pointermove', 2, 200, 360);
+  surface.send('pointermove', 3, 300, 360);
+  assert.ok(calls.density[0] < .38 && calls.density[0] > 0);
+  surface.send('pointerup', 3, 300, 360);
+  surface.send('pointerup', 2, 200, 360);
+  surface.send('pointerup', 1, 100, 360);
+  assert.equal(calls.adjust[0][1], calls.density.at(-1));
+  gestures.dispose();
+});
+
+test('three-finger upward drag can select maximum next capture quality from a full scene', () => {
+  const surface = canvas(), calls = callbacks();
+  const gestures = attachViewerGestures(surface, calls.options);
+  surface.send('pointerdown', 1, 100, 300);
+  surface.send('pointerdown', 2, 200, 300);
+  surface.send('pointerdown', 3, 300, 300);
+  surface.send('pointermove', 1, 100, 260);
+  surface.send('pointermove', 2, 200, 260);
+  surface.send('pointermove', 3, 300, 260);
+  surface.send('pointerup', 3, 300, 260);
+  surface.send('pointerup', 2, 200, 260);
+  surface.send('pointerup', 1, 100, 260);
+  assert.deepEqual(calls.density, []);
+  assert.equal(calls.adjust[0][1], 1);
+  gestures.dispose();
+});
+
+test('three-finger horizontal drag locks definition despite later vertical movement', () => {
+  const surface = canvas(), calls = callbacks();
+  const gestures = attachViewerGestures(surface, calls.options);
+  surface.send('pointerdown', 1, 100, 300);
+  surface.send('pointerdown', 2, 200, 300);
+  surface.send('pointerdown', 3, 300, 300);
+  surface.send('pointermove', 1, 140, 300);
+  surface.send('pointermove', 2, 240, 300);
+  surface.send('pointermove', 3, 340, 300);
+  surface.send('pointermove', 1, 140, 400);
+  surface.send('pointermove', 2, 240, 400);
+  surface.send('pointermove', 3, 340, 400);
+  assert.ok(calls.definition.at(-1) > .5);
+  assert.deepEqual(calls.density, []);
+  surface.send('pointerup', 3, 340, 400);
+  surface.send('pointerup', 2, 240, 400);
+  surface.send('pointerup', 1, 140, 400);
+  assert.deepEqual(calls.adjust[0][1], null);
   gestures.dispose();
 });
 
