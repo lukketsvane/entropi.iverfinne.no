@@ -145,7 +145,7 @@ class ShadowService(unittest.TestCase):
                 files = [("images", (f"view-{i}.png", image.getvalue(), "image/png")) for i in range(6)]
                 self.assertEqual(client.post("/api/reconstruct/jobs", headers=AUTH, data={"process_res": "999"}, files=files).status_code, 400)
                 self.assertEqual(client.post("/api/reconstruct/jobs", headers=AUTH, files=files + files[:1]).status_code, 400)
-                response = client.post("/api/reconstruct/jobs", headers=AUTH, data={"process_res": "420"}, files=files)
+                response = client.post("/api/reconstruct/jobs", headers=AUTH, data={"process_res": "168"}, files=files)
                 self.assertEqual(response.status_code, 202)
                 path = "/api/reconstruct/jobs/" + response.json()["id"]
                 for _ in range(100):
@@ -154,7 +154,7 @@ class ShadowService(unittest.TestCase):
                         break
                     time.sleep(.01)
                 self.assertEqual(job["status"], "succeeded")
-                self.assertEqual(seen, [(6, 420)])
+                self.assertEqual(seen, [(6, 168)])
                 self.assertNotIn("process_res", job)
 
 

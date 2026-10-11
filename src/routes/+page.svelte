@@ -253,7 +253,7 @@
 				await tick();
 				if (disposed || id !== generation || !cloudHost) return;
 				const next = await createGaussianViewer(cloudHost, scene.bytes, scene.camera, error => fail(error, id), task.signal,
-					(status, density) => { if (!disposed && id === generation) { announcement = status; reconstructionDensity = density; } });
+					(status, density) => { if (!disposed && id === generation) { announcement = status; if (density !== null) reconstructionDensity = density; } });
 				if (disposed || id !== generation) { next.dispose(); return; }
 				viewer = next;
 				viewerReady = true;
@@ -290,7 +290,7 @@
 			await tick();
 			if (disposed || id !== generation || !cloudHost) return;
 			const localViewer = createPointCloudViewer(cloudHost, cloud, error => fail(error, id),
-				(status, density) => { if (!disposed && id === generation) { announcement = status; reconstructionDensity = density; } });
+				(status, density) => { if (!disposed && id === generation) { announcement = `Lokal djupnebasert punktsky som reserve. ${status}`; if (density !== null) reconstructionDensity = density; } });
 			localViewer.setStyle('color'); viewer = localViewer;
 			viewerReady = true;
 			// Preserve the original captured RGB in the local fallback and its PLY.

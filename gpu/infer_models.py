@@ -61,7 +61,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--process-res", type=int, choices=(336, 420, 504), default=420)
+    parser.add_argument("--process-res", type=int, choices=(168, 224, 336, 420, 504), default=420)
     args = parser.parse_args()
     images = sorted(args.input.glob("*.png"))
     if not 1 <= len(images) <= 6:

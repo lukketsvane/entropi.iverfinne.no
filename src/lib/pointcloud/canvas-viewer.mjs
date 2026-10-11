@@ -22,7 +22,8 @@ export class CanvasPointCloudViewer {
     this.order=this.indices.map((_,i)=>i);
     this.gestures=attachViewerGestures(this.canvas,{
       onDensity:value=>{this.order=Array.from({length:Math.max(1,Math.round(this.indices.length*value))},(_,i)=>i);this.dirty=true;},
-      onPinch:scale=>{this.zoom=Math.max(.35,Math.min(4,this.zoom*scale));this.dirty=true;},
+      onSize:value=>this.setPointSize(value),
+      onPinch:scale=>{this.zoom=Math.max(.005,Math.min(4,this.zoom*scale**2));this.dirty=true;},
       onAdjust
     });
     this.resize=()=>{
@@ -38,14 +39,14 @@ export class CanvasPointCloudViewer {
       if(this.pointers.size===1){this.yaw+=(e.clientX-previous.x)*.006;this.pitch=Math.max(-1.4,Math.min(1.4,this.pitch+(e.clientY-previous.y)*.006));}
       else {
         const after=[...this.pointers.values()],old=Math.hypot(before[0].x-before[1].x,before[0].y-before[1].y),next=Math.hypot(after[0].x-after[1].x,after[0].y-after[1].y);
-        if(old>1)this.zoom=Math.max(.35,Math.min(4,this.zoom*next/old));
+        if(old>1)this.zoom=Math.max(.005,Math.min(4,this.zoom*next/old));
         this.panX+=((after[0].x+after[1].x)-(before[0].x+before[1].x))*.5;
         this.panY+=((after[0].y+after[1].y)-(before[0].y+before[1].y))*.5;
       }
       this.dirty=true;e.preventDefault();
     };
     /** @param {PointerEvent} e */ this.up=e=>{this.pointers.delete(e.pointerId);};
-    /** @param {WheelEvent} e */ this.wheel=e=>{this.auto=false;this.zoom=Math.max(.35,Math.min(4,this.zoom*Math.exp(-e.deltaY*.001)));this.dirty=true;e.preventDefault();};
+    /** @param {WheelEvent} e */ this.wheel=e=>{this.auto=false;this.zoom=Math.max(.005,Math.min(4,this.zoom*Math.exp(-e.deltaY*.001)));this.dirty=true;e.preventDefault();};
     this.canvas.addEventListener('pointerdown',this.down);this.canvas.addEventListener('pointermove',this.move);
     this.canvas.addEventListener('pointerup',this.up);this.canvas.addEventListener('pointercancel',this.up);
     this.canvas.addEventListener('wheel',this.wheel,{passive:false});
@@ -87,7 +88,7 @@ export class CanvasPointCloudViewer {
       }
       else if(this.style==='color')ctx.fillStyle=`rgb(${colors[at]},${colors[at+1]},${colors[at+2]})`;
       else {const gray=Math.round(92+(colors[at]*.299+colors[at+1]*.587+colors[at+2]*.114)*.64);ctx.fillStyle=`rgb(${gray},${gray},${gray})`;}
-      const size=Math.max(1,Math.min(4,radius*.0087*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
+      const size=Math.max(.25,Math.min(24,radius*.0087*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
     }
   }
   /** @param {import('./head-parallax.mjs').HeadPose|null} pose */

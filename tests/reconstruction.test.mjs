@@ -20,7 +20,9 @@ test('held capture retains bounded distinct camera views and both ends, rather t
 
 test('view density selects bounded DA3 reconstruction resolution with balanced quality by default', () => {
   assert.equal(processResolution(), 420);
-  assert.equal(processResolution(.2), 336);
+  assert.equal(processResolution(0), 168);
+  assert.equal(processResolution(.2), 224);
+  assert.equal(processResolution(.4), 336);
   assert.equal(processResolution(.6), 420);
   assert.equal(processResolution(1), 504);
 });
@@ -84,7 +86,11 @@ test('capture upload forwards selected resolution and rejects invalid, cross-ori
   assert.equal((await proxy.create(incoming({}))).status, 400);
   form.delete('process_res');
   assert.equal((await proxy.create(incoming({}))).status, 202);
-  assert.deepEqual(resolutions, ['420', '420']);
+  form.set('process_res', '168');
+  assert.equal((await proxy.create(incoming({}))).status, 202);
+  form.set('process_res', '224');
+  assert.equal((await proxy.create(incoming({}))).status, 202);
+  assert.deepEqual(resolutions, ['420', '420', '168', '224']);
 });
 
 test('Vercel forwards six views but rejects a seventh', async () => {

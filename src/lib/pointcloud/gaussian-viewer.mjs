@@ -9,7 +9,7 @@ import {attachViewerGestures, noAdjust} from './viewer-gestures.ts';
  * @param {HTMLElement} host @param {Uint8Array} bytes @param {SceneCamera} initial
  * @param {(error:Error)=>void} onError @param {AbortSignal} signal */
 export async function createGaussianViewer(host, bytes, initial, onError, signal, onAdjust = noAdjust) {
-  const {SparkRenderer, SplatMesh} = await import('@sparkjsdev/spark');
+  const {SparkRenderer, SplatMesh, dyno} = await import('@sparkjsdev/spark');
   signal.throwIfAborted();
   const renderer = new THREE.WebGLRenderer({antialias: false, alpha: true, powerPreference: 'high-performance'});
   renderer.setClearColor(0x000000, 0);
@@ -19,7 +19,12 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
   const lodBudget = globalThis.matchMedia?.('(pointer:coarse)').matches ? 350_000 : 2_500_000;
   const spark = new SparkRenderer({renderer, maxStdDev: Math.sqrt(8), minAlpha: 1 / 255, lodSplatCount: lodBudget});
   scene.add(spark);
-  const mesh = new SplatMesh({fileBytes: bytes, fileName: 'scene.splat', lod: true, enableLod: true});
+  const splatSize = dyno.dynoFloat(1);
+  const sizeModifier = dyno.dynoBlock({gsplat: dyno.Gsplat}, {gsplat: dyno.Gsplat}, ({gsplat}) => {
+    if (!gsplat) throw new Error('Gaussian-data manglar.');
+    return {gsplat: dyno.combineGsplat({gsplat, scales: dyno.mul(dyno.splitGsplat(gsplat).outputs.scales, splatSize)})};
+  });
+  const mesh = new SplatMesh({fileBytes: bytes, fileName: 'scene.splat', lod: true, enableLod: true, worldModifier: sizeModifier});
   // Both model pipelines export OpenCV coordinates (x right, y down, z forward).
   mesh.rotation.x = Math.PI;
   scene.add(mesh);
@@ -31,9 +36,14 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
       spark.lodSplatCount = Math.max(1, Math.round(lodBudget * value));
       spark.setDirty();
     },
+    onSize(value) {
+      splatSize.value = value;
+      splatSize.uniform.value = value;
+      spark.setDirty();
+    },
     onPinch(scale) {
       const offset = camera.position.clone().sub(controls.target);
-      offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale, controls.minDistance, controls.maxDistance) / offset.length());
+      offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale ** 2, controls.minDistance, controls.maxDistance) / offset.length());
       camera.position.copy(controls.target).add(offset);
       controls.update();
     },
@@ -72,7 +82,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
       typeof sceneBoundsRadius === 'number' && Number.isFinite(sceneBoundsRadius) && sceneBoundsRadius >= 0
       ? {center: flip(sceneCenter), radius: sceneBoundsRadius} : null;
     camera.near = distance / 1000;
-    controls.minDistance = distance * .15;
+    controls.minDistance = distance * .05;
     controls.update();
     host.replaceChildren(renderer.domElement);
     const updateZoomLimit = () => {
@@ -83,7 +93,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
       const along = offset?.dot(direction) ?? 0;
       const across = offset ? Math.sqrt(Math.max(0, offset.lengthSq() - along * along)) : 0;
       const fitDistance = bounds ? along + bounds.radius / Math.sin(halfAngle) + across / Math.tan(halfAngle) : 0;
-      controls.maxDistance = Math.max(distance * 20, fitDistance * 1.25);
+      controls.maxDistance = Math.max(distance * 1000, fitDistance * 1.25);
       camera.far = Math.max(distance * 1000, controls.maxDistance + (offset?.length() ?? 0) + (bounds?.radius ?? 0));
       camera.updateProjectionMatrix();
     };
