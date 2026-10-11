@@ -2,7 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { updated } from '$app/state';
 	import { DepthEstimator } from '../lib/pointcloud/estimator.mjs';
-	import '../lib/pointcloud/minimal.css';
+	import '../lib/pointcloud/void.css';
 	import { imageToPointCloud, pointCloudPLY, inferenceSize, pointStride } from '../../static/pointcloud/math.mjs';
 
 	let video = $state<HTMLVideoElement | undefined>();
