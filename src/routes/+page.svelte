@@ -2,7 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { updated } from '$app/state';
 	import { DepthEstimator } from '../lib/pointcloud/estimator.mjs';
-	import '../lib/pointcloud/studio.css';
+	import '../lib/pointcloud/void.css';
 	import { imageToPointCloud, pointCloudPLY, inferenceSize, pointStride } from '../../static/pointcloud/math.mjs';
 
 	let video = $state<HTMLVideoElement | undefined>();
@@ -16,7 +16,7 @@
 	let errorMessage = $state('');
 	let progressPhase = $state('KLARGJER');
 	let progressPercent = $state<number | null>(null);
-	let visualStyle = $state<'color' | 'silver' | 'depth'>('color');
+	let visualStyle = $state<'color' | 'silver' | 'depth'>('silver');
 	let pointSize = $state(1);
 	let showOriginal = $state(false);
 	let cameraReady = $state(false);
@@ -29,8 +29,24 @@
 	let generation = 0;
 	let cameraAttempt = 0;
 	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+	let recording = $state(false);
+	let recordedCount = $state(0);
+	let recordTimer: ReturnType<typeof setInterval> | undefined;
+	let recordingFrames: {width:number;height:number;rgba:Uint8ClampedArray}[] = [];
+	let recordBusy = false;
+	let lastPointer = -1;
+	let touchStart = 0;
+	let lastTap = 0;
+	let panoramaWorker: Worker | null = null;
+
+	function stopRecording() {
+		if (recordTimer) clearInterval(recordTimer);
+		recordTimer = undefined;
+		recording = false;
+	}
 
 	function stopCamera() {
+		stopRecording();
 		cameraAttempt++;
 		stream?.getTracks().forEach((track) => track.stop());
 		stream = null;
@@ -46,6 +62,11 @@
 	}
 
 	function clearCapture() {
+		stopRecording();
+		panoramaWorker?.terminate();
+		panoramaWorker = null;
+		recordingFrames = [];
+		recordedCount = 0;
 		clearResult();
 		if (capturedUrl) URL.revokeObjectURL(capturedUrl);
 		showOriginal = false;
@@ -83,6 +104,7 @@
 
 	onMount(() => {
 		void startCamera();
+
 		const resume = () => {
 			clearTimeout(resumeTimer);
 			if (document.visibilityState !== 'visible') return;
@@ -100,6 +122,7 @@
 			disposed = true;
 			generation++;
 			clearTimeout(resumeTimer);
+			panoramaWorker?.terminate();
 			window.removeEventListener('focus', resume);
 			document.removeEventListener('visibilitychange', resume);
 			estimator.dispose();
@@ -108,8 +131,8 @@
 		};
 	});
 
-	function canvasFor(source: CanvasImageSource, width: number, height: number) {
-		const scale = Math.min(1, 840 / Math.max(width, height));
+	function canvasFor(source: CanvasImageSource, width: number, height: number, maxSide = 840) {
+		const scale = Math.min(1, maxSide / Math.max(width, height));
 		const canvas = document.createElement('canvas');
 		canvas.width = Math.max(1, Math.round(width * scale));
 		canvas.height = Math.max(1, Math.round(height * scale));
@@ -156,6 +179,107 @@
 			stopCamera();
 			await saveCapture(canvas, pixels, id);
 		} catch (error) { fail(error, id); }
+	}
+
+	function sampleVideo() {
+		if (recordBusy || !video || video.readyState < 2 || !video.videoWidth || recordingFrames.length >= 24) return;
+		recordBusy = true;
+		try {
+			const scale = Math.min(1, 360 / Math.max(video.videoWidth, video.videoHeight));
+			const width = Math.max(24, Math.round(video.videoWidth * scale));
+			const height = Math.max(24, Math.round(video.videoHeight * scale));
+			const canvas = document.createElement('canvas');
+			canvas.width = width; canvas.height = height;
+			const context = canvas.getContext('2d', {willReadFrequently:true});
+			if (!context) return;
+			context.drawImage(video,0,0,width,height);
+			const rgba = context.getImageData(0,0,width,height).data;
+			recordingFrames.push({width,height,rgba});
+			recordedCount = recordingFrames.length;
+		} finally { recordBusy = false; }
+	}
+
+	function beginHold(event: PointerEvent) {
+		if (mode !== 'camera' || recording || !video || video.readyState < 2) return;
+		event.preventDefault();
+		lastPointer = event.pointerId;
+		touchStart = performance.now();
+		recordingFrames = [];
+		recordedCount = 0;
+		recording = true;
+		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+		sampleVideo();
+		recordTimer = setInterval(sampleVideo, 240);
+	}
+
+	async function endHold(event: PointerEvent) {
+		if (!recording || event.pointerId !== lastPointer) return;
+		stopRecording();
+		lastPointer = -1;
+		const frames = recordingFrames;
+		recordingFrames = [];
+		const duration = performance.now() - touchStart;
+		if (duration < 350 || frames.length < 2) {
+			void takePhoto();
+			return;
+		}
+		const id = ++generation;
+		mode = 'working';
+		announcement = 'Set saman panorama.';
+		progressPhase = 'SET SAMAN';
+		progressPercent = null;
+		stopCamera();
+		try {
+			const result = await new Promise<{width:number;height:number;rgba:Uint8ClampedArray;accepted:number}>((resolve,reject) => {
+				const worker = new Worker('/pointcloud/panorama-worker.mjs', {type:'module'});
+				panoramaWorker = worker;
+				const timer = setTimeout(() => {
+					worker.terminate();
+					reject(new Error('Panoramaet tok for lang tid.'));
+				}, 45000);
+				worker.onmessage = (message) => {
+					clearTimeout(timer);
+					worker.terminate();
+					if (panoramaWorker === worker) panoramaWorker = null;
+					if (message.data.type === 'error') reject(new Error(message.data.message));
+					else resolve({...message.data,rgba:new Uint8ClampedArray(message.data.rgba)});
+				};
+				worker.onerror = () => {
+					clearTimeout(timer); worker.terminate();
+					if (panoramaWorker === worker) panoramaWorker = null;
+					reject(new Error('Panoramaet kunne ikkje setjast saman.'));
+				};
+				worker.postMessage({frames:frames.map(f=>({width:f.width,height:f.height,rgba:f.rgba.buffer}))},
+					frames.map(f=>f.rgba.buffer));
+			});
+			if (disposed || id !== generation) return;
+			const canvas = document.createElement('canvas');
+			canvas.width=result.width; canvas.height=result.height;
+			const context=canvas.getContext('2d');
+			if (!context) throw new Error('Kunne ikkje vise panoramaet.');
+			const imageBytes = new Uint8ClampedArray(new ArrayBuffer(result.rgba.byteLength));
+			imageBytes.set(result.rgba);
+			context.putImageData(new ImageData(imageBytes,result.width,result.height),0,0);
+			const capture=canvasFor(canvas,result.width,result.height);
+			await saveCapture(capture.canvas,capture.pixels,id);
+		} catch(error) { fail(error,id); }
+	}
+
+	function cancelHold(event: PointerEvent) {
+		if (event.pointerId !== lastPointer) return;
+		stopRecording();
+		recordingFrames = [];
+		lastPointer = -1;
+	}
+
+	function resultTap(event: MouseEvent) {
+		const now = performance.now();
+		if (now - lastTap < 350) {
+			lastTap = 0;
+			void retake();
+			return;
+		}
+		lastTap = now;
 	}
 
 	async function decodePhoto(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close(): void }> {
@@ -250,7 +374,7 @@
 			if (disposed || id !== generation || !cloudHost) return;
 			viewer = new PointCloudViewer(cloudHost, cloud, (error: Error) => fail(error, id));
 			cloudCount = cloud.count;
-			viewer.setStyle(visualStyle);
+			viewer.setStyle('silver');
 			viewer.setPointSize(pointSize);
 			const ply = pointCloudPLY(cloud);
 			plyUrl = URL.createObjectURL(new Blob([ply], { type: 'application/octet-stream' }));
@@ -264,7 +388,7 @@
 		clearCapture();
 		errorMessage = '';
 		progressPercent = null;
-		visualStyle = 'color';
+		visualStyle = 'silver';
 		pointSize = 1;
 		mode = 'camera';
 		announcement = '';
@@ -315,116 +439,38 @@
 	<meta name="description" content="Ta eit bilete og sjå det som ei farga 3D-punktsky. Biletet blir handsama lokalt på telefonen." />
 </svelte:head>
 
-<main class="studio" class:result={mode === 'done'}>
-	<div class="visual">
-		<video bind:this={video} class:hidden={mode !== 'camera'} autoplay muted playsinline></video>
-		{#if capturedUrl && mode !== 'done'}
-			<img class="source-image" src={capturedUrl} alt="Kamerabiletet som blir rekonstruert" />
-		{/if}
-		<div class="cloud" class:hidden={mode !== 'done'} bind:this={cloudHost}></div>
-		{#if mode === 'done' && showOriginal && capturedUrl}
-			<img class="original-preview" src={capturedUrl} alt="Originalbiletet" />
-		{/if}
-		<div class="vignette" aria-hidden="true"></div>
-		{#if mode === 'camera'}
-			<div class="finder" aria-hidden="true">
-				<i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>
-				<div class="finder-center"><span></span><span></span></div>
-			</div>
-		{/if}
-	</div>
-
-	<header class="topbar">
-		<div class="identity">
-			<span class="wordmark">ENTROPI<span class="period">.</span></span>
-			<span class="edition">SPATIAL CAMERA / 001</span>
-		</div>
-		<div class="live-indicator" aria-live="off">
-			<span class:online={mode === 'camera' && cameraReady} class="status-dot"></span>
-			<span>{mode === 'camera' ? (cameraReady ? 'LIVE' : 'KAMERA') : mode === 'working' ? 'PROCESSING' : mode === 'done' ? '3D SPACE' : 'PAUSED'}</span>
-		</div>
-	</header>
-
+<main class="void-stage" class:has-cloud={mode === 'done'}>
 	{#if mode === 'camera'}
-		<div class="capture-copy">
-			<span class="eyebrow">01 / CAPTURE</span>
-			<p>Eitt bilete.<br />Eit nytt perspektiv.</p>
-		</div>
-		<div class="bottom-dock capture-dock">
-			<button class="dock-icon" type="button" aria-label="Vel eit bilete frå telefonen" onclick={openCapture}>
-				<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 3-3 4 4" /></svg>
-			</button>
-			<div class="shutter-wrap">
-				<button class="capture" type="button" aria-label="Ta bilete og lag 3D-punktsky" onclick={takePhoto}>
-					<span class="shutter-ring"><span class="shutter-core"></span></span>
-				</button>
-				<span class="shutter-label">CAPTURE</span>
-			</div>
-			<div class="dock-spacer" aria-hidden="true"></div>
-		</div>
+		<button
+			type="button"
+			class="tiny-viewfinder"
+			class:recording
+			aria-label="Trykk for eitt bilete. Hald inne og panorer for panorama."
+			onpointerdown={beginHold}
+			onpointerup={endHold}
+			onpointercancel={cancelHold}
+			onlostpointercapture={cancelHold}
+			oncontextmenu={(event) => event.preventDefault()}
+		>
+			<video bind:this={video} autoplay muted playsinline></video>
+			<span class="analogue-noise" aria-hidden="true"></span>
+			<span class="reticle" aria-hidden="true"></span>
+			{#if recording}
+				<span class="record-pulse" aria-hidden="true"></span>
+			{/if}
+		</button>
+		<button type="button" class="invisible-picker" aria-label="Vel eit bilete" onclick={openCapture}></button>
 	{:else if mode === 'working'}
-		<div class="scan-overlay" aria-hidden="true"><div class="scan-beam"></div><div class="scan-grid"></div></div>
-		<div class="processing" role="status" aria-live="polite">
-			<div class="processing-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-			<span class="eyebrow">02 / RECONSTRUCTION</span>
-			<strong>{progressPhase}</strong>
-			<div class="progress-track" class:indeterminate={progressPercent === null}>
-				<span style:width={progressPercent === null ? '30%' : progressPercent + '%'}></span>
-			</div>
-			<p>{progressPercent === null ? 'Biletet vert omsett til rom.' : progressPercent + ' %'}<br /><small>AI-estimert djupn · lokalt på eininga</small></p>
-		</div>
-		<button class="cancel-action" type="button" onclick={retake} aria-label="Avbryt berekninga">
-			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6 18 18M18 6 6 18" /></svg><span>AVBRYT</span>
-		</button>
+		<div class="tiny-activity" aria-hidden="true"><span></span><span></span><span></span></div>
+		{#if capturedUrl}<img class="ghost-frame" src={capturedUrl} alt="" />{/if}
+		<button type="button" class="invisible-cancel" aria-label="Avbryt og gå tilbake til kameraet" onclick={retake}></button>
 	{:else if mode === 'done'}
-		<div class="result-label">
-			<span class="eyebrow">03 / SPATIAL STUDY</span>
-			<span class="result-number">{cloudCount.toLocaleString('nb-NO')} POINTS</span>
-		</div>
-		<div class="view-controls" role="group" aria-label="Utsjånad på punktskyen">
-			<button class:active={visualStyle === 'color'} aria-pressed={visualStyle === 'color'} onclick={() => setStyle('color')}>RGB</button>
-			<button class:active={visualStyle === 'silver'} aria-pressed={visualStyle === 'silver'} onclick={() => setStyle('silver')}>FORM</button>
-			<button class:active={visualStyle === 'depth'} aria-pressed={visualStyle === 'depth'} onclick={() => setStyle('depth')}>DEPTH</button>
-		</div>
-		<div class="bottom-dock result-dock">
-			<div class="result-tools">
-				<button class="dock-icon" type="button" aria-label="Ta eit nytt bilete" onclick={retake}>
-					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5.5 9a7 7 0 0 1 12.8-2L20 12M4 12l1.7 4A7 7 0 0 0 18.5 15" /></svg>
-				</button>
-				<button class="dock-icon" type="button" aria-label="Tilbakestill perspektivet" onclick={() => viewer?.reset()}>
-					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 15v5h-5M5 5l5 5M19 19l-5-5M20 9V4h-5M4 15v5h5" /></svg>
-				</button>
-				<button class="dock-icon" type="button" aria-label="Endre punktstorleik" onclick={changePointSize}>
-					<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.2" /><circle cx="12" cy="12" r="2.5" /><circle cx="20" cy="12" r="3.5" /></svg>
-				</button>
-			</div>
-			<div class="result-tools">
-				<button class="dock-icon" type="button" aria-label="Vis eller skjul originalbiletet" aria-pressed={showOriginal} onclick={() => (showOriginal = !showOriginal)}>
-					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" /><circle cx="12" cy="12" r="3" /></svg>
-				</button>
-				{#if plyUrl}
-					<a class="dock-icon" href={plyUrl} download="entropi-punktsky.ply" aria-label="Last ned 3D-punktsky som PLY">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 17v4h16v-4" /></svg>
-					</a>
-				{/if}
-				{#if capturedUrl}
-					<a class="dock-icon" href={capturedUrl} target="_blank" rel="noopener" aria-label="Del eller lagre originalbiletet" onclick={sharePhoto}>
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m0 0 5 5m-5-5L7 8M4 14v7h16v-7" /></svg>
-					</a>
-				{/if}
-			</div>
-		</div>
-		<div class="result-footnote">DRAG TO ORBIT <span>·</span> PINCH TO ZOOM <span>·</span> ESTIMATED DEPTH</div>
-	{:else if mode === 'error'}
-		<div class="error-panel" role="alert">
-			<span class="eyebrow">RECONSTRUCTION INTERRUPTED</span>
-			<p>{errorMessage}</p>
-			<button type="button" onclick={retry}>{capturedPixels ? 'PRØV IGJEN' : 'NYTT BILETE'} <span aria-hidden="true">↗</span></button>
-		</div>
-		<button class="cancel-action" type="button" onclick={retake} aria-label="Ta eit nytt bilete">
-			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6 18 18M18 6 6 18" /></svg><span>NYTT BILETE</span>
-		</button>
+		<div class="cloud-immersive" bind:this={cloudHost} role="img" aria-label="Interaktiv tredimensjonal punktsky. Dra for å rotere og knip for å zoome."></div>
+		<button type="button" class="invisible-reset" aria-label="Nytt bilete" ondblclick={() => void retake()} onclick={resultTap}></button>
+		{#if plyUrl}<a class="invisible-export" href={plyUrl} download="entropi-punktsky.ply" aria-label="Last ned punktsky som PLY"></a>{/if}
+	{:else}
+		<button type="button" class="tiny-error" aria-label="Prøv igjen" onclick={retry}><span aria-hidden="true"></span></button>
 	{/if}
-	<input bind:this={photoInput} id="photo" type="file" accept="image/*" onchange={capture} oncancel={() => void startCamera()} />
-	<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
+	<input bind:this={photoInput} type="file" accept="image/*" onchange={capture} oncancel={() => void startCamera()} />
+	<span class="sr-only" role="status" aria-live="polite">{announcement || errorMessage}</span>
 </main>
