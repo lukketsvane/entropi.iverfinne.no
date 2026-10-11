@@ -2,7 +2,7 @@
  * Verifiserte modellar har sin eigen cache; ikkje slett han når appskallet blir oppdatert.
  * HTML: nett først (ny deploy syner med ein gong), cache som reserve.
  * Alt anna frå same opphav: cache først, oppdater i bakgrunnen. */
-const V = 'entropi-v10-px10';
+const V = 'entropi-v11-shake';
 
 self.addEventListener('install', (e) => {
 	e.waitUntil(
