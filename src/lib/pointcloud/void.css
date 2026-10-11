@@ -1,0 +1,33 @@
+/* ENTROPI / VOID — no visible copy, menus, toolbars or overlays. */
+:global(html),:global(body){background:#000!important;overflow:hidden}
+.void-stage{position:fixed;inset:0;background:#000;color:#fff;overflow:hidden;isolation:isolate;touch-action:manipulation}
+.void-stage .tiny-viewfinder{position:absolute;left:50%;top:47%;transform:translate(-50%,-50%) perspective(700px) rotateY(-5deg) rotateX(2deg);width:min(34vw,174px);aspect-ratio:3/4;border:0;padding:0;background:#090909;overflow:hidden;outline:0;box-shadow:0 0 0 1px #ffffff0b,0 0 80px #ffffff0a;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;cursor:crosshair;transition:box-shadow .3s,transform .3s}
+.void-stage .tiny-viewfinder:active,.void-stage .tiny-viewfinder.recording{box-shadow:0 0 0 1px #ffffff45,0 0 70px #ffffff19;transform:translate(-50%,-50%) perspective(700px) rotateY(-3deg) scale(1.035)}
+.void-stage .tiny-viewfinder video{width:100%;height:100%;object-fit:cover;display:block;filter:grayscale(1) contrast(2.15) brightness(.8) blur(.38px);transform:scale(1.08) skew(-1.5deg,1deg);pointer-events:none}
+.void-stage .tiny-viewfinder::before{content:"";position:absolute;z-index:2;inset:0;background:radial-gradient(ellipse,transparent 37%,#000a 100%);pointer-events:none}
+.void-stage .tiny-viewfinder::after{content:"";position:absolute;z-index:3;inset:0;background:repeating-linear-gradient(180deg,#fff0 0px,#fff0 2px,#0003 3px,#0003 4px);mix-blend-mode:multiply;opacity:.6;pointer-events:none}
+.void-stage .analogue-noise{position:absolute;z-index:4;inset:-8%;opacity:.13;pointer-events:none;background:repeating-linear-gradient(95deg,transparent 0 9px,#fff3 10px 11px,transparent 12px 25px);transform:skewY(2deg)}
+.void-stage .reticle{position:absolute;z-index:5;top:50%;left:50%;width:13px;height:13px;transform:translate(-50%,-50%);opacity:.75;pointer-events:none}
+.void-stage .reticle::before,.void-stage .reticle::after{content:"";position:absolute;background:#fff8}
+.void-stage .reticle::before{height:1px;width:13px;top:6px;left:0}
+.void-stage .reticle::after{height:13px;width:1px;top:0;left:6px}
+.void-stage .record-pulse{position:absolute;z-index:6;left:50%;bottom:7px;transform:translateX(-50%);height:2px;width:24px;border-radius:10px;background:#fff;box-shadow:0 0 13px #fff;animation:void-pulse .9s ease-in-out infinite alternate;pointer-events:none}
+@keyframes void-pulse{to{opacity:.2;transform:translateX(-50%) scaleX(.6)}}
+.void-stage .tiny-activity{position:absolute;top:50%;left:50%;display:flex;gap:11px;transform:translate(-50%,-50%);z-index:2}
+.void-stage .tiny-activity span{height:3px;width:3px;background:#fff;border-radius:50%;opacity:.2;animation:void-breathe 1.5s ease-in-out infinite}
+.void-stage .tiny-activity span:nth-child(2){animation-delay:.22s}
+.void-stage .tiny-activity span:nth-child(3){animation-delay:.44s}
+@keyframes void-breathe{50%{opacity:1;transform:scale(1.6)}}
+.void-stage .ghost-frame{position:absolute;top:47%;left:50%;transform:translate(-50%,-50%);width:min(34vw,174px);max-height:27vh;object-fit:contain;filter:grayscale(1) contrast(2.5);opacity:.075;pointer-events:none}
+.void-stage .cloud-immersive{position:absolute;inset:0;touch-action:none}
+.void-stage .cloud-immersive canvas{width:100%;height:100%;display:block;touch-action:none}
+.void-stage .invisible-picker,.void-stage .invisible-cancel,.void-stage .invisible-reset,.void-stage .invisible-export{position:absolute;z-index:4;width:36px;height:36px;border:0;padding:0;background:transparent;color:transparent;opacity:0}
+.void-stage .invisible-picker{left:0;bottom:0}
+.void-stage .invisible-cancel{left:0;bottom:0}
+.void-stage .invisible-reset{right:0;top:0}
+.void-stage .invisible-export{right:0;bottom:0}
+.void-stage .tiny-error{position:absolute;top:50%;left:50%;width:48px;height:48px;transform:translate(-50%,-50%);border:0;background:transparent;display:grid;place-items:center;cursor:pointer}
+.void-stage .tiny-error span{width:7px;height:7px;border:1px solid #aaa;border-radius:50%}
+.void-stage input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.void-stage .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.void-stage .record-pulse,.void-stage .tiny-activity span{animation:none}}
