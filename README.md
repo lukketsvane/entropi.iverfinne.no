@@ -4,6 +4,16 @@ Eit kamera som måler uorden. På skjermen er det berre biletet: ingen tekst, in
 
 **https://entropi.iverfinne.no**
 
+## Framsida: kamera til 3D-punktsky
+
+Framsida ( `/` ) er TripoSplat-kameraet. På iPhone tek eitt trykk på lukkaren eit stillbilete direkte frå den synlege kameravideoen; dersom straumen ikkje er tilgjengeleg, opnar den vanlege kameraveljaren. Biletet vert skalert til maksimalt 1536 piksel og 4 MB og sendt via `/triposplat/api/jobs` til GPU-tenaren. Appen ventar på at rekonstruksjonen vert ferdig.
+
+Resultatet vert vist som ei **interaktiv 3D-punktsky**, med fargane og 3D-posisjonane frå Gaussian-splat-fila. Ein kan rotere med éin finger og knipe for å zoome. Den originale `.splat`-fila kan framleis lastast ned. Visaren les 32-byte `.splat`-postar, nyttar opptil 220 000 punkt på mobilen, og viser ikkje oppdikta geometri dersom modellen manglar. Dette er rekonstruksjon frå eitt bilete, ikkje ein metrisk 3D-skann.
+
+SvelteKit-rutene for opplasting, status og resultat er proxiar til GPU-tenaren. **Krev ein køyrande TripoSplat-backend** og Vercel-miljøvariablane `TRIPOSPLAT_BACKEND_URL` og `TRIPOSPLAT_BACKEND_TOKEN`. Nettstaden kan byggje og vise kameraet utan tenaren, men 3D-generering vil då feile med ei melding. Kameraeksperimenta som er dokumenterte nedanfor ligg under `/camera`.
+
+
+
 ## Bruk på iPhone
 
 1. Opne sida i Safari.

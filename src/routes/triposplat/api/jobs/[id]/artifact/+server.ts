@@ -1,4 +1,8 @@
 import { json } from '@sveltejs/kit';
+import type { Config } from '@sveltejs/adapter-vercel';
+
+// GPU proxy requests may exceed Vercel's 10-second default.
+export const config: Config = { split: true, maxDuration: 60 };
 import type { RequestHandler } from './$types';
 import { backendRequest } from '../../../../../../lib/server/triposplat';
 
@@ -7,7 +11,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 		return json({ error: 'Invalid job ID.' }, { status: 400 });
 	}
 	try {
-		const pending = backendRequest(`/api/jobs/${params.id}/artifact`, { signal: request.signal });
+		const pending = backendRequest(`/api/jobs/${params.id}/artifact`, { signal: request.signal }, 45_000);
 		if (!pending) return json({ error: 'Generation service is not configured.' }, { status: 503 });
 		const response = await pending;
 		if (!response.ok) {

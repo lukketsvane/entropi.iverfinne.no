@@ -13,6 +13,7 @@
 	let shareUnavailable = false;
 	let activeId = '';
 	let disposed = false;
+	let capturing = false;
 	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
 
 	function stopCamera() {
@@ -28,9 +29,38 @@
 		shareUnavailable = false;
 	}
 
-	function openCapture() {
-		stopCamera();
-		photoInput?.click();
+	/** One tap captures the frame already visible in the website camera. */
+	async function openCapture() {
+		if (capturing || mode !== 'camera') return;
+		if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+			// No live stream (for example denied permission): use the iOS camera picker.
+			photoInput?.click();
+			return;
+		}
+		capturing = true;
+		try {
+			const scale = Math.min(1, 1536 / Math.max(video.videoWidth, video.videoHeight));
+			const canvas = document.createElement('canvas');
+			canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+			canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+			const context = canvas.getContext('2d');
+			if (!context) throw new Error('Could not capture the camera frame.');
+			context.drawImage(video, 0, 0, canvas.width, canvas.height);
+			const blob = await new Promise<Blob>((resolve, reject) => {
+				canvas.toBlob(
+					(result) => result ? resolve(result) : reject(new Error('Could not capture the camera frame.')),
+					'image/jpeg', 0.9
+				);
+			});
+			await submitImage(new File([blob], 'camera-frame.jpg', { type: 'image/jpeg' }));
+		} catch (error) {
+			if (!disposed) {
+				announcement = 'Could not capture the camera frame. Try again.';
+				console.error('capture', error);
+			}
+		} finally {
+			capturing = false;
+		}
 	}
 
 	async function startCamera() {
@@ -110,29 +140,28 @@
 	}
 
 	async function waitForJob(id: string) {
-		while (activeId === id) {
+		const deadline = Date.now() + 12 * 60_000;
+		while (activeId === id && Date.now() < deadline) {
 			const response = await fetch(`/triposplat/api/jobs/${encodeURIComponent(id)}`, { cache: 'no-store' });
 			const data = await readJson(response);
 			if (activeId !== id) return;
 			if (data.status === 'completed') {
 				jobId = id;
 				mode = 'done';
-				announcement = '3D splat ready.';
+				announcement = '3D-punktsky klar.';
 				return;
 			}
 			if (data.status === 'failed') {
 				throw new Error(typeof data.error === 'string' ? data.error : 'Generation failed.');
 			}
-			announcement = 'Generating 3D splat.';
+			announcement = 'Lagar 3D-punktsky.';
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 		}
+		if (activeId === id) throw new Error('3D reconstruction timed out. Try again.');
 	}
 
-	async function capture(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		const selected = input.files?.[0];
-		input.value = '';
-		if (!selected) return;
+	async function submitImage(selected: File) {
+		if (disposed || mode !== 'camera') return;
 		clearCapture();
 		mode = 'working';
 		announcement = 'Uploading photo.';
@@ -156,6 +185,13 @@
 			await tick();
 			void startCamera();
 		}
+	}
+
+	async function capture(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const selected = input.files?.[0];
+		input.value = '';
+		if (selected) await submitImage(selected);
 	}
 
 	async function retake() {
@@ -183,17 +219,17 @@
 </script>
 
 <svelte:head>
-	<title>entropi · TripoSplat</title>
-	<meta name="description" content="Take a photo and turn it into a 3D Gaussian splat." />
+	<title>entropi · 3D-punktsky</title>
+	<meta name="description" content="Ta eit bilete med kameraet og sjå det som ei interaktiv 3D-punktsky." />
 </svelte:head>
 
 <main class="camera">
 	{#if mode === 'done' && jobId}
-		<iframe title="3D splat viewer" src={`/triposplat-viewer.html?job=${encodeURIComponent(jobId)}`}></iframe>
+		<iframe title="Interaktiv 3D-punktsky" src={`/triposplat-viewer.html?job=${encodeURIComponent(jobId)}`}></iframe>
 		<button class="retake" type="button" aria-label="Take another photo" onclick={retake}>
 			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M5.5 9A7 7 0 0 1 18 7l2 4M4 13l2 4a7 7 0 0 0 12.5-2" /></svg>
 		</button>
-		<a class="download" href={`/triposplat/api/jobs/${encodeURIComponent(jobId)}/artifact`} download={`triposplat-${jobId}.splat`} aria-label="Download 3D splat">
+		<a class="download" href={`/triposplat/api/jobs/${encodeURIComponent(jobId)}/artifact`} download={`triposplat-${jobId}.splat`} aria-label="Last ned TripoSplat 3D-data">
 			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 17v4h16v-4" /></svg>
 		</a>
 	{:else}
@@ -201,7 +237,7 @@
 		{#if mode === 'camera'}
 			<button class="capture" type="button" aria-label="Take a photo" onclick={openCapture}><span class="shutter" aria-hidden="true"></span></button>
 		{:else}
-			<div class="working" role="progressbar" aria-label="Generating 3D splat"><span></span></div>
+			<div class="working" role="progressbar" aria-label="Lagar 3D-punktsky"><span></span></div>
 		{/if}
 	{/if}
 	{#if capturedUrl}
