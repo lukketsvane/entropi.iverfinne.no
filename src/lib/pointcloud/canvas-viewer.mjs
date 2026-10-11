@@ -9,7 +9,7 @@ export class CanvasPointCloudViewer {
     const context=this.canvas.getContext('2d',{alpha:true});
     if(!context)throw new Error('Kunne ikkje vise punktskyen.');
     this.context=context;host.replaceChildren(this.canvas);this.canvas.style.touchAction='none';
-    this.disposed=false;this.dirty=true;this.auto=true;this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.pointSize=1;
+    this.disposed=false;this.dirty=true;this.auto=true;this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.pointSize=1;this.opacity=1;
     this.style='mono';
     this.parallax=new HeadParallax();
     this.reducedMotion=globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -23,6 +23,8 @@ export class CanvasPointCloudViewer {
     this.gestures=attachViewerGestures(this.canvas,{
       onDensity:value=>{this.order=Array.from({length:Math.max(1,Math.round(this.indices.length*value))},(_,i)=>i);this.dirty=true;},
       onSize:value=>this.setPointSize(value),
+      onOpacity:value=>{this.opacity=value;this.dirty=true;},
+      onPan:(x,y)=>{this.panX+=x;this.panY+=y;this.dirty=true;},
       onPinch:scale=>{this.zoom=Math.max(.005,Math.min(4,this.zoom*scale**2));this.dirty=true;},
       onAdjust
     });
@@ -66,7 +68,7 @@ export class CanvasPointCloudViewer {
     const cy=Math.cos(this.yaw),sy=Math.sin(this.yaw),cp=Math.cos(this.pitch),sp=Math.sin(this.pitch);
     const radius=Math.max(.01,this.cloud.radius),distance=radius*2.8/this.zoom,focal=Math.min(width,height)*1.08;
     const eye=this.parallax.offsets(distance,width/height,time,this.reducedMotion);
-    ctx.clearRect(0,0,width,height);
+    ctx.clearRect(0,0,width,height);ctx.globalAlpha=this.opacity;
     for(let i=0;i<this.order.length;i++) {
       const at=this.indices[i]*3,x=positions[at],y=positions[at+1],z=positions[at+2];
       const rx=x*cy+z*sy,rz=-x*sy+z*cy,ry=y*cp-rz*sp,depth=distance+eye.z-(y*sp+rz*cp);
@@ -90,6 +92,7 @@ export class CanvasPointCloudViewer {
       else {const gray=Math.round(92+(colors[at]*.299+colors[at+1]*.587+colors[at+2]*.114)*.64);ctx.fillStyle=`rgb(${gray},${gray},${gray})`;}
       const size=Math.max(.25,Math.min(24,radius*.0087*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
     }
+    ctx.globalAlpha=1;
   }
   /** @param {import('./head-parallax.mjs').HeadPose|null} pose */
   setHeadPose(pose){this.parallax.setPose(pose);if(pose)this.auto=false;this.dirty=true;}

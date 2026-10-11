@@ -1,4 +1,5 @@
 import io
+import json
 from pathlib import Path
 import struct
 import sys
@@ -113,6 +114,12 @@ class ShadowService(unittest.TestCase):
                 self.assertEqual(client.get(path + "/artifact", headers={**AUTH, "Range": "bytes=0-32"}).status_code, 416)
                 self.assertFalse((Path(directory) / identifier / "input").exists())
                 self.assertFalse((Path(directory) / identifier / "output").exists())
+            saved = list((Path(directory) / "saved").glob("*.splat"))
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0].read_bytes(), artifact.content)
+            self.assertEqual(json.loads(saved[0].with_suffix(".json").read_text())["sha256"], job["sha256"])
+            with TestClient(create_app(token=TOKEN, root=directory, runner=predict, ready=lambda: True)):
+                self.assertTrue(saved[0].exists())
 
     def test_model_failures_never_publish_an_artifact(self):
         async def fail(inputs, output, process_res):

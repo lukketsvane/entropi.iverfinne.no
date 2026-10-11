@@ -1,6 +1,6 @@
 type Point = {x: number; y: number; x0: number; y0: number};
 type Measure = {x: number; y: number; gap: number};
-type Options = {onDensity(value: number): void; onPinch(scale: number): void; onSize?(value: number): void; onAdjust?(message: string, density: number | null): void};
+type Options = {onDensity(value: number): void; onPinch(scale: number): void; onPan?(x: number, y: number): void; onSize?(value: number): void; onOpacity?(value: number): void; onAdjust?(message: string, density: number | null): void};
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 export const noAdjust = (_message: string, _density: number | null) => {};
@@ -18,15 +18,16 @@ export function progressiveIndices(count: number) {
   return indices;
 }
 
-export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPinch, onSize = () => {}, onAdjust = () => {}}: Options) {
+export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPinch, onPan = () => {}, onSize = () => {}, onOpacity = () => {}, onAdjust = () => {}}: Options) {
   const pointers = new Map<number, Point>();
-  const state = {density: 1, size: 1, brightness: 1, contrast: 1, filter: 'none'};
+  const state = {density: 1, size: 1, opacity: 1, contrast: 1, filter: 'none'};
   let active = false;
   let mode = '';
   let start: Measure | null = null;
   let previous: Measure | null = null;
   let changed = false;
   let densityChanged = false;
+  let holdStarted = 0;
 
   const measure = () => {
     const points = [...pointers.values()];
@@ -35,10 +36,11 @@ export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPi
     const gap = points.length === 2 ? Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) : 0;
     return {x, y, gap};
   };
-  const reset = () => {
+  const reset = (time: number) => {
     start = pointers.size >= 2 && pointers.size <= 3 ? measure() : null;
     previous = start;
     mode = pointers.size === 3 ? 'appearance' : 'pending';
+    if (pointers.size === 2) holdStarted = time;
     for (const point of pointers.values()) { point.x0 = point.x; point.y0 = point.y; }
   };
   const down = (event: PointerEvent) => {
@@ -47,7 +49,7 @@ export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPi
     if (pointers.size >= 2) {
       active = true;
       canvas.setPointerCapture(event.pointerId);
-      reset();
+      reset(event.timeStamp);
       event.preventDefault();
     }
   };
@@ -65,12 +67,16 @@ export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPi
       const bx = second.x - second.x0, by = second.y - second.y0;
       const a = Math.hypot(ax, ay), b = Math.hypot(bx, by);
       if ((a < 8 || b < 8) && Math.max(a, b) < 50) return;
-      mode = a >= 8 && b >= 8 && ax * bx + ay * by > a * b * 0.4
-        ? Math.abs(ax + bx) > Math.abs(ay + by) ? 'size' : 'density' : 'pinch';
+      const together = a >= 8 && b >= 8 && ax * bx + ay * by > a * b * 0.4;
+      if (!together) mode = 'pinch';
+      else if (event.timeStamp - holdStarted >= 425) mode = Math.abs(ax + bx) > Math.abs(ay + by) ? 'size' : 'density';
+      else mode = 'pan';
       previous = start;
     }
     const width = Math.max(1, canvas.clientWidth), height = Math.max(1, canvas.clientHeight);
-    if (mode === 'density') {
+    if (mode === 'pan') {
+      onPan(current.x - previous.x, current.y - previous.y);
+    } else if (mode === 'density') {
       const next = clamp(state.density - (current.y - previous.y) * 1.4 / height, 0, 1);
       if (next !== state.density) { state.density = next; onDensity(10 ** (-6 * (1 - next))); changed = densityChanged = true; }
     } else if (mode === 'size') {
@@ -79,11 +85,12 @@ export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPi
     } else if (mode === 'pinch' && previous.gap > 0 && current.gap > 0) {
       onPinch(current.gap / previous.gap);
     } else if (mode === 'appearance') {
-      const brightness = clamp(state.brightness - (current.y - previous.y) * 1.6 / height, 0.4, 2);
+      const opacity = clamp(state.opacity - (current.y - previous.y) * 1.6 / height, 0.02, 1);
       const contrast = clamp(state.contrast + (current.x - previous.x) * 1.6 / width, 0.4, 2);
-      if (brightness !== state.brightness || contrast !== state.contrast) {
-        state.brightness = brightness; state.contrast = contrast;
-        state.filter = `brightness(${brightness}) contrast(${contrast})`;
+      if (opacity !== state.opacity || contrast !== state.contrast) {
+        if (opacity !== state.opacity) { state.opacity = opacity; onOpacity(opacity); }
+        state.contrast = contrast;
+        state.filter = `contrast(${contrast})`;
         canvas.style.filter = state.filter;
         changed = true;
       }
@@ -92,9 +99,9 @@ export function attachViewerGestures(canvas: HTMLCanvasElement, {onDensity, onPi
   };
   const up = (event: PointerEvent) => {
     if (!pointers.delete(event.pointerId)) return;
-    if (pointers.size >= 2 && pointers.size <= 3) reset();
+    if (pointers.size >= 2 && pointers.size <= 3) reset(event.timeStamp);
     else if (pointers.size === 0) {
-      if (changed) onAdjust(`Viste element ${Number((100 * 10 ** (-6 * (1 - state.density))).toPrecision(2))} prosent av full mengd. Elementstorleik ${Math.round(state.size * 100)} prosent. Lysstyrke ${Math.round(state.brightness * 100)} prosent. Kontrast ${Math.round(state.contrast * 100)} prosent.`, densityChanged ? state.density : null);
+      if (changed) onAdjust(`Viste element ${Number((100 * 10 ** (-6 * (1 - state.density))).toPrecision(2))} prosent av full mengd. Elementstorleik ${Math.round(state.size * 100)} prosent. Opasitet ${Math.round(state.opacity * 100)} prosent. Kontrast ${Math.round(state.contrast * 100)} prosent.`, densityChanged ? state.density : null);
       active = false; mode = ''; start = previous = null; changed = densityChanged = false;
     }
   };

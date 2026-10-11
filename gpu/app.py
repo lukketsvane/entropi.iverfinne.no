@@ -51,9 +51,25 @@ async def run_model(inputs, output, process_res):
     return json.loads((output / "metadata.json").read_text(encoding="utf-8"))
 
 
-def create_app(token=None, root=None, runner=run_model, ready=model_ready):
+def save_result(artifact, destination, metadata):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pending_artifact = destination.with_suffix(".splat.part")
+    details = destination.with_suffix(".json")
+    pending_details = details.with_suffix(".json.part")
+    try:
+        shutil.copyfile(artifact, pending_artifact)
+        os.replace(pending_artifact, destination)
+        pending_details.write_text(json.dumps(metadata, separators=(",", ":")), encoding="utf-8")
+        os.replace(pending_details, details)
+    finally:
+        pending_artifact.unlink(missing_ok=True)
+        pending_details.unlink(missing_ok=True)
+
+
+def create_app(token=None, root=None, runner=run_model, ready=model_ready, save_root=None):
     token = token or os.environ.get("GAUSS_BACKEND_TOKEN") or os.environ.get("BACKEND_TOKEN")
     root = Path(root or os.environ.get("ENTROPI_JOBS_DIR", "./jobs")).resolve()
+    save_root = Path(save_root or os.environ.get("ENTROPI_SAVE_DIR") or root / "saved").resolve()
     jobs = {}
     queue = asyncio.Queue(maxsize=1)
     available = False
@@ -71,8 +87,12 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
                 count, bounds = await asyncio.to_thread(pack_ply, path, folder / "scene.splat")
                 artifact = folder / "scene.splat"
                 digest = await asyncio.to_thread(lambda: hashlib.sha256(artifact.read_bytes()).hexdigest())
-                job.update(status="succeeded", progress=100, model=metadata["model"], camera={**metadata["camera"], "bounds": bounds},
-                    representation="gaussian-splats", sizeBytes=artifact.stat().st_size, sha256=digest, splats=count)
+                camera = {**metadata["camera"], "bounds": bounds}
+                result = {"model": metadata["model"], "camera": camera, "representation": "gaussian-splats",
+                    "sizeBytes": artifact.stat().st_size, "sha256": digest, "splats": count, "process_res": job["process_res"]}
+                name = time.strftime("%Y%m%d-%H%M%SZ", time.gmtime(job["created"])) + "-" + job["id"]
+                await asyncio.to_thread(save_result, artifact, save_root / f"{name}.splat", result)
+                job.update(status="succeeded", progress=100, **result)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -89,6 +109,7 @@ def create_app(token=None, root=None, runner=run_model, ready=model_ready):
         if not token or len(token) < 24:
             raise RuntimeError("Set GAUSS_BACKEND_TOKEN to the existing private Vercel backend token")
         root.mkdir(parents=True, exist_ok=True)
+        save_root.mkdir(parents=True, exist_ok=True)
         # Interrupted jobs are never replayed after a service restart.
         for stale in root.iterdir():
             if stale.is_dir() and ID.fullmatch(stale.name):

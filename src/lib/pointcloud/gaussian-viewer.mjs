@@ -20,9 +20,11 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
   const spark = new SparkRenderer({renderer, maxStdDev: Math.sqrt(8), minAlpha: 1 / 255, lodSplatCount: lodBudget});
   scene.add(spark);
   const splatSize = dyno.dynoFloat(1);
+  const splatOpacity = dyno.dynoFloat(1);
   const sizeModifier = dyno.dynoBlock({gsplat: dyno.Gsplat}, {gsplat: dyno.Gsplat}, ({gsplat}) => {
     if (!gsplat) throw new Error('Gaussian-data manglar.');
-    return {gsplat: dyno.combineGsplat({gsplat, scales: dyno.mul(dyno.splitGsplat(gsplat).outputs.scales, splatSize)})};
+    const values = dyno.splitGsplat(gsplat).outputs;
+    return {gsplat: dyno.combineGsplat({gsplat, scales: dyno.mul(values.scales, splatSize), opacity: dyno.mul(values.opacity, splatOpacity)})};
   });
   const mesh = new SplatMesh({fileBytes: bytes, fileName: 'scene.splat', lod: true, enableLod: true, worldModifier: sizeModifier});
   // Both model pipelines export OpenCV coordinates (x right, y down, z forward).
@@ -40,6 +42,18 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
       splatSize.value = value;
       splatSize.uniform.value = value;
       spark.setDirty();
+    },
+    onOpacity(value) {
+      splatOpacity.value = value;
+      splatOpacity.uniform.value = value;
+      spark.setDirty();
+    },
+    onPan(x, y) {
+      const distance = camera.position.distanceTo(controls.target);
+      const scale = 2 * distance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.max(1, renderer.domElement.clientHeight);
+      const shift = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).multiplyScalar(-x * scale);
+      shift.addScaledVector(new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion), y * scale);
+      camera.position.add(shift); controls.target.add(shift); controls.update();
     },
     onPinch(scale) {
       const offset = camera.position.clone().sub(controls.target);
