@@ -90,6 +90,13 @@ export class PointCloudViewer {
         '  vec3 depthColor = mix(farTone, nearTone, vDepth);',
         '  vec3 rgb = uMode < 0.5 ? vColor : (uMode < 1.5 ? silver : depthColor);',
         '  if (uMode > 2.5) rgb = vec3(0.32 + 0.68 * dot(vColor, vec3(0.299, 0.587, 0.114)));',
+        '  if (uMode > 3.5) {',
+        '    float seed = dot(vPosition, vec3(127.1, 311.7, 74.7));',
+        '    float dither = fract(sin(seed) * 43758.5453);',
+        '    float threshold = 0.22 + dither * 0.56;',
+        '    vec3 phosphor = step(vec3(threshold), pow(clamp(vColor, 0.0, 1.0), vec3(0.67)));',
+        '    rgb = phosphor * vec3(1.0, 0.94, 1.0);',
+        '  }',
         '  gl_FragColor = vec4(rgb, a * 0.97);',
         '  #include <colorspace_fragment>',
         '}'
