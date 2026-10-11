@@ -4,6 +4,8 @@ import {estimateTranslation, registerFrames, stitchPanorama} from '../static/poi
 import {depthTiles, mergeDepthTile, estimateImageDepth} from '../static/pointcloud/tiles.mjs';
 import {FrameRecorder} from '../src/lib/pointcloud/recorder.mjs';
 import {imageToPointCloud} from '../static/pointcloud/math.mjs';
+import {Worker} from 'node:worker_threads';
+import {once} from 'node:events';
 
 function view(offsetX=0,offsetY=0,width=160,height=120) {
   const data=new Uint8ClampedArray(width*height*4);
@@ -77,4 +79,18 @@ test('pointer cancellation discards the recording and never processes abandoned 
   const recorder=new FrameRecorder({capture:()=>view(),onHold:()=>{},finish:()=>finishes++,cancel:()=>cancels++});
   recorder.begin();t.mock.timers.tick(600);recorder.abort();recorder.end();t.mock.timers.tick(1000);
   assert.equal(finishes,0);assert.equal(cancels,1);assert.equal(recorder.frames.length,0);
+});
+test('the actual panorama worker accepts the capture transfer protocol and reports errors explicitly',async()=>{
+  const worker=new Worker(new URL('../scripts/panorama-worker-check.mjs',import.meta.url));
+  try {
+    await once(worker,'message');
+    const frames=[view(),view(25,5),view(50,10)];
+    const input=frames.map(frame=>({...frame,data:frame.data.buffer}));
+    const pending=once(worker,'message');worker.postMessage(input,input.map(frame=>frame.data));
+    const [result]=await pending;
+    assert.equal(result.type,'result');assert.equal(result.registeredFrames,3);
+    assert.equal(result.data.byteLength,result.width*result.height*4);
+    const invalid=once(worker,'message');worker.postMessage([{data:new ArrayBuffer(0),width:320,height:240}]);
+    const [failure]=await invalid;assert.equal(failure.type,'error');assert.match(failure.message,/Ugyldig/);
+  } finally {await worker.terminate();}
 });
