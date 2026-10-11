@@ -2,10 +2,12 @@
 	import { onMount, tick } from 'svelte';
 	import { updated } from '$app/state';
 	import { DepthEstimator } from '../lib/pointcloud/estimator.mjs';
-	import '../lib/pointcloud/studio.css';
+	import '../lib/pointcloud/minimal.css';
+	import { stitchFrames } from '../../static/pointcloud/panorama.mjs';
 	import { imageToPointCloud, pointCloudPLY, inferenceSize, pointStride } from '../../static/pointcloud/math.mjs';
 
 	let video = $state<HTMLVideoElement | undefined>();
+	let preview = $state<HTMLCanvasElement | undefined>();
 	let photoInput = $state<HTMLInputElement | undefined>();
 	let cloudHost = $state<HTMLDivElement | undefined>();
 	let stream: MediaStream | null = null;
@@ -16,7 +18,7 @@
 	let errorMessage = $state('');
 	let progressPhase = $state('KLARGJER');
 	let progressPercent = $state<number | null>(null);
-	let visualStyle = $state<'color' | 'silver' | 'depth'>('color');
+	let visualStyle = $state<'color' | 'silver' | 'depth'>('silver');
 	let pointSize = $state(1);
 	let showOriginal = $state(false);
 	let cameraReady = $state(false);
@@ -29,6 +31,21 @@
 	let generation = 0;
 	let cameraAttempt = 0;
 	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+	let previewAnimation = 0;
+	let lastPreview = 0;
+	let activePointer: number | null = null;
+	let holdTimer: ReturnType<typeof setTimeout> | undefined;
+	let tapTimer: ReturnType<typeof setTimeout> | undefined;
+	let lastTap = 0;
+	let recordingTimer: ReturnType<typeof setInterval> | undefined;
+	let recording = $state(false);
+	let recordCount = $state(0);
+	let frames: Array<{width:number;height:number;rgba:Uint8ClampedArray}> = [];
+	let panoramaWorker: Worker | null = null;
+	let rejectPanorama: ((error: Error) => void) | null = null;
+	let captureKind = $state<'single'|'panorama'>('single');
+	let capturedFrames = $state(1);
+	let acceptedFrames = $state(1);
 
 	function stopCamera() {
 		cameraAttempt++;
@@ -108,8 +125,8 @@
 		};
 	});
 
-	function canvasFor(source: CanvasImageSource, width: number, height: number) {
-		const scale = Math.min(1, 840 / Math.max(width, height));
+	function canvasFor(source: CanvasImageSource, width: number, height: number, maxSide = 840) {
+		const scale = Math.min(1, maxSide / Math.max(width, height));
 		const canvas = document.createElement('canvas');
 		canvas.width = Math.max(1, Math.round(width * scale));
 		canvas.height = Math.max(1, Math.round(height * scale));
@@ -149,6 +166,8 @@
 		const id = ++generation;
 		try {
 			const { canvas, pixels } = canvasFor(video, video.videoWidth, video.videoHeight);
+			captureKind = 'single';
+			capturedFrames=1; acceptedFrames=1;
 			mode = 'working';
 			progressPhase = 'FANGAR LYS';
 			progressPercent = null;
@@ -195,6 +214,7 @@
 			try {
 				if (disposed || id !== generation) return;
 				const { canvas, pixels } = canvasFor(decoded.source, decoded.width, decoded.height);
+				captureKind = 'single'; capturedFrames=1; acceptedFrames=1;
 				await saveCapture(canvas, pixels, id);
 			} finally { decoded.close(); }
 		} catch (error) { fail(error, id); }
@@ -250,7 +270,7 @@
 			if (disposed || id !== generation || !cloudHost) return;
 			viewer = new PointCloudViewer(cloudHost, cloud, (error: Error) => fail(error, id));
 			cloudCount = cloud.count;
-			viewer.setStyle(visualStyle);
+			viewer.setStyle('silver');
 			viewer.setPointSize(pointSize);
 			const ply = pointCloudPLY(cloud);
 			plyUrl = URL.createObjectURL(new Blob([ply], { type: 'application/octet-stream' }));
@@ -264,7 +284,7 @@
 		clearCapture();
 		errorMessage = '';
 		progressPercent = null;
-		visualStyle = 'color';
+		visualStyle = 'silver';
 		pointSize = 1;
 		mode = 'camera';
 		announcement = '';
