@@ -114,7 +114,7 @@
 	function stitch(frames: Pixels[]): Promise<Capture> {
 		if (frames.length === 1) return Promise.resolve({ ...frames[0], inputFrames: 1, registeredFrames: 1 });
 		return new Promise((resolve, reject) => {
-			const worker = new Worker('/pointcloud/panorama-worker.mjs?v=4', { type: 'module' });
+			const worker = new Worker('/pointcloud/panorama-worker.mjs?v=5', { type: 'module' });
 			panoramaWorker = worker;
 			const timer = setTimeout(() => finish(new Error('Panoramaet tok for lang tid. Prøv ei kortare rørsle.')), 60000);
 			function finish(error: unknown, result?: Capture) {
@@ -124,8 +124,11 @@
 			}
 			rejectPanorama = error => finish(error);
 			worker.onmessage = ({ data }) => {
-				if (data.type === 'error') finish(new Error(data.message));
-				else finish(null, { ...data, data: new Uint8ClampedArray(data.data) });
+				if (data.type === 'error' || data.error) finish(new Error(data.message || data.error));
+				else if (data.type !== 'result' || !Number.isInteger(data.width) || !Number.isInteger(data.height)
+					|| !(data.data instanceof ArrayBuffer) || data.data.byteLength !== data.width * data.height * 4) {
+					finish(new Error('Panoramaet gav eit ugyldig resultat.'));
+				} else finish(null, { ...data, data: new Uint8ClampedArray(data.data) });
 			};
 			worker.onerror = () => finish(new Error('Kunne ikkje setje saman bileta.'));
 			const input = frames.map(frame => ({ width: frame.width, height: frame.height, data: frame.data.buffer }));
@@ -139,7 +142,17 @@
 			clearResult(); captured = null; progress = null; mode = 'working';
 			showPixels(frames[0]); stopCamera();
 			announcement = frames.length > 1 ? 'Set saman overlappande bilete.' : 'Lagar punktsky.';
-			const result = await stitch(frames);
+			let result: Capture;
+			try {
+				result = await stitch(frames);
+			} catch (error) {
+				// If registration cannot be completed, keep the actual captured image
+				// rather than leaving a black screen. Never invent additional views.
+				if (disposed || id !== generation) return;
+				result = { ...frames[0], inputFrames: frames.length, registeredFrames: 1 };
+				announcement = 'Kunne ikkje registrere panoramaet. Lagar punktsky frå det første biletet.';
+				console.warn('Panorama registration failed; using original captured frame:', error);
+			}
 			if (disposed || id !== generation) return;
 			captured = result;
 			await generateCloud(id);
@@ -164,7 +177,7 @@
 			const cloud = imageToPointCloud({ rgba: pixels.data, width: pixels.width, height: pixels.height,
 				depth: prediction.depth, depthWidth: prediction.width, depthHeight: prediction.height,
 				stride: pointStride(pixels.width, pixels.height), focalEstimate: pixels.focalEstimate });
-			mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
+			mode = 'done'; if (preview) { preview.dispose(); preview = null; }
 			await tick();
 			if (disposed || id !== generation || !cloudHost) return;
 			viewer = new PointCloudViewer(cloudHost, cloud, error => fail(error, id));
@@ -212,8 +225,12 @@
 		generation++; recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); captured = null;
 		progress = null; lastTap = null; mode = 'camera';
 		announcement = 'Trykk for eitt bilete. Hald inne for fleire bilete.';
-		if (preview) { preview.source = null; preview.active = true; }
-		await tick(); void startCamera();
+		await tick();
+		if (!preview && finder) {
+			try { preview = new Viewfinder(finder); }
+			catch { announcement = 'Kamerasøkjaren kunne ikkje startast.'; }
+		} else if (preview) { preview.source = null; preview.active = true; }
+		void startCamera();
 	}
 	function retry() {
 		if (!captured) { void retake(); return; }
