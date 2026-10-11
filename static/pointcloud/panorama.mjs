@@ -7,7 +7,7 @@
 /** @typedef {{width:number,height:number,rgba:Uint8ClampedArray}} Frame */
 
 /** @param {Frame} frame @param {number} [maxWidth] */
-export function thumbnail(frame, maxWidth = 84) {
+export function thumbnail(frame, maxWidth = 120) {
   const width = Math.min(maxWidth, frame.width);
   const height = Math.max(12, Math.round(frame.height * width / frame.width));
   const values = new Uint8Array(width * height);
