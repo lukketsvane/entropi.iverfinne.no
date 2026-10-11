@@ -1,7 +1,7 @@
 export const MAX_FRAMES = 8;
 export const MAX_UPLOAD = 4_000_000;
 export const ARTIFACT_CHUNK = 2_000_000;
-export const MAX_ARTIFACT = 64_000_000;
+export const MAX_ARTIFACT = 96_000_000;
 const JOB_ID = /^[a-zA-Z0-9_-]{8,128}$/;
 /** @typedef {{data:Uint8ClampedArray,width:number,height:number}} Pixels */
 /** @typedef {{percent?:number,phase:string}} Progress */

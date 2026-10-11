@@ -1,9 +1,10 @@
 /** Genuine XYZ projection for browsers without a WebGL2 context. */
 import {HeadParallax} from './head-parallax.mjs';
+import {attachViewerGestures, noAdjust, progressiveIndices} from './viewer-gestures.ts';
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 export class CanvasPointCloudViewer {
   /** @param {HTMLElement} host @param {PointCloud} cloud */
-  constructor(host,cloud) {
+  constructor(host,cloud,onAdjust = noAdjust) {
     this.host=host;this.cloud=cloud;this.canvas=document.createElement('canvas');
     const context=this.canvas.getContext('2d',{alpha:false});
     if(!context)throw new Error('Kunne ikkje vise punktskyen.');
@@ -15,9 +16,15 @@ export class CanvasPointCloudViewer {
     this.auto=!this.reducedMotion;
     /** @type {Map<number,{x:number,y:number}>} */ this.pointers=new Map();
     const stride=Math.max(1,Math.ceil(cloud.count/21000));
-    this.indices=Array.from({length:Math.ceil(cloud.count/stride)},(_,i)=>i*stride);
+    const baseIndices=Array.from({length:Math.ceil(cloud.count/stride)},(_,i)=>i*stride);
+    this.indices=progressiveIndices(baseIndices.length).map(i=>baseIndices[i]);
     this.projected=new Float32Array(this.indices.length*3);
     this.order=this.indices.map((_,i)=>i);
+    this.gestures=attachViewerGestures(this.canvas,{
+      onDensity:value=>{this.order=Array.from({length:Math.max(1,Math.round(this.indices.length*value))},(_,i)=>i);this.dirty=true;},
+      onPinch:scale=>{this.zoom=Math.max(.35,Math.min(4,this.zoom*scale));this.dirty=true;},
+      onAdjust
+    });
     this.resize=()=>{
       this.canvas.width=Math.max(1,Math.round(host.clientWidth));this.canvas.height=Math.max(1,Math.round(host.clientHeight));this.dirty=true;
     };
@@ -59,7 +66,7 @@ export class CanvasPointCloudViewer {
     const radius=Math.max(.01,this.cloud.radius),distance=radius*2.8/this.zoom,focal=Math.min(width,height)*1.08;
     const eye=this.parallax.offsets(distance,width/height,time,this.reducedMotion);
     ctx.fillStyle='#000';ctx.fillRect(0,0,width,height);
-    for(let i=0;i<this.indices.length;i++) {
+    for(let i=0;i<this.order.length;i++) {
       const at=this.indices[i]*3,x=positions[at],y=positions[at+1],z=positions[at+2];
       const rx=x*cy+z*sy,rz=-x*sy+z*cy,ry=y*cp-rz*sp,depth=distance+eye.z-(y*sp+rz*cp);
       this.projected[i*3]=width/2+this.panX+focal*(eye.scale*(rx-eye.x)/depth+eye.x/eye.screen);
@@ -94,12 +101,12 @@ export class CanvasPointCloudViewer {
     canvas.height=Math.max(1,Math.min(1024,Math.round(384*this.canvas.height/this.canvas.width)));
     const context=canvas.getContext('2d');if(!context)throw new Error('Kunne ikkje lese punktskyen.');
     const style=this.style;
-    try{this.style='mono';this.render();context.drawImage(this.canvas,0,0,canvas.width,canvas.height);}
+    try{this.style='mono';this.render();context.filter=this.gestures.state.filter;context.drawImage(this.canvas,0,0,canvas.width,canvas.height);}
     finally{this.style=style;this.render();this.dirty=true;}
     return canvas;
   }
   dispose(){
-    if(this.disposed)return;this.disposed=true;cancelAnimationFrame(this.animation);this.observer.disconnect();this.pointers.clear();
+    if(this.disposed)return;this.disposed=true;cancelAnimationFrame(this.animation);this.observer.disconnect();this.pointers.clear();this.gestures.dispose();
     this.canvas.removeEventListener('pointerdown',this.down);this.canvas.removeEventListener('pointermove',this.move);
     this.canvas.removeEventListener('pointerup',this.up);this.canvas.removeEventListener('pointercancel',this.up);this.canvas.removeEventListener('wheel',this.wheel);this.canvas.remove();
   }

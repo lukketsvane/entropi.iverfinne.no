@@ -2,7 +2,7 @@
 
 The Entropi homepage calls `/api/reconstruct/health`, submits independent camera views, polls a job, and downloads the real Gaussian artifact in authenticated 2 MB ranges. Vercel forwards to the existing `GAUSS_BACKEND_URL` and keeps `GAUSS_BACKEND_TOKEN` on the server. The phone never receives that token.
 
-One photo uses **Apple SHARP**, which predicts position, scale, rotation, opacity and colour. A held pan uses **Depth Anything 3 Nested Giant Large 1.1** with `infer_gs=True`, estimated camera poses and the official `gs_ply` exporter. The large 1.1 Gaussian head replaces the local Small depth model when this service is available. Eight distinct views are retained from each capture; they are not flattened into a panorama before reconstruction.
+One photo uses **Apple SHARP**, which predicts position, scale, rotation, opacity and colour. A held pan uses **Depth Anything 3 Nested Giant Large 1.1** with `infer_gs=True`, estimated camera poses and the official Gaussian PLY writer. The large 1.1 Gaussian head replaces the local Small depth model when this service is available. Eight distinct views are retained from each capture; they are not flattened into a panorama before reconstruction.
 
 The local depth point cloud remains an explicitly identified fallback in screen-reader status if Shadow is offline. No visible text, settings or model controls are added to the phone UI.
 
@@ -33,7 +33,7 @@ python3.11 -m venv .venv
 .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000 --env-file .env --workers 1
 ```
 
-GPU inference is serialized, with one pending job and a 210 second worker timeout. Each model runs in a subprocess so its GPU memory is released after inference. Uploaded photos and intermediate PLY files are deleted immediately after the job. Packed artifacts expire after 30 minutes and all interrupted jobs are removed at restart. A `.splat` retains every model-predicted Gaussian parameter; ordinary XYZ point clouds are rejected.
+GPU inference is serialized, with one pending job and a 210 second worker timeout. Each model runs in a subprocess so its GPU memory is released after inference. Uploaded photos and intermediate PLY files are deleted immediately after the job. Packed artifacts expire after 30 minutes and all interrupted jobs are removed at restart. A `.splat` includes every predicted Gaussian, with float32 position and scale plus byte-encoded rotation, opacity and degree-0 colour. The format cannot store higher-order spherical harmonics. Ordinary XYZ point clouds are rejected.
 
 SHARP's model is under Apple's Machine Learning Research Model license; the DA3 Giant weights are under CC BY-NC 4.0. This configuration is for the existing personal research camera. Review those model licenses before changing the use to a commercial product. Code and model repositories are pinned in `model-requirements.txt`.
 

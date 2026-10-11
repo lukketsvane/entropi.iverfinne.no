@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {CanvasPointCloudViewer} from './canvas-viewer.mjs';
 import {HeadParallax} from './head-parallax.mjs';
+import {attachViewerGestures, noAdjust, progressiveIndices} from './viewer-gestures.ts';
 
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 
 /** @param {HTMLElement} host @param {PointCloud} cloud @param {(error:Error)=>void} onError */
-export function createPointCloudViewer(host,cloud,onError) {
-  try {return new PointCloudViewer(host,cloud,onError);}
-  catch {return new CanvasPointCloudViewer(host,cloud);}
+export function createPointCloudViewer(host,cloud,onError,onAdjust = noAdjust) {
+  try {return new PointCloudViewer(host,cloud,onError,onAdjust);}
+  catch {return new CanvasPointCloudViewer(host,cloud,onAdjust);}
 }
 
 /**
@@ -17,7 +18,7 @@ export function createPointCloudViewer(host,cloud,onError) {
  */
 export class PointCloudViewer {
   /** @param {HTMLElement} host @param {PointCloud} cloud @param {(error: Error) => void} onError */
-  constructor(host, cloud, onError = () => {}) {
+  constructor(host, cloud, onError = () => {}, onAdjust = noAdjust) {
     this.host = host;
     this.cloud = cloud;
     this.disposed = false;
@@ -50,6 +51,7 @@ export class PointCloudViewer {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(cloud.positions, 3));
+    geometry.setIndex(progressiveIndices(cloud.count));
     const colors = new Float32Array(cloud.colors.length);
     const color = new THREE.Color();
     for (let i = 0; i < cloud.count; i++) {
@@ -120,6 +122,16 @@ export class PointCloudViewer {
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     this.scene.add(this.points);
+    this.gestures = attachViewerGestures(this.renderer.domElement, {
+      onDensity: value => { geometry.setDrawRange(0, Math.max(1, Math.round(cloud.count * value))); this.dirty = true; },
+      onPinch: scale => {
+        const offset = this.camera.position.clone().sub(this.controls.target);
+        offset.multiplyScalar(THREE.MathUtils.clamp(offset.length() / scale, this.controls.minDistance, this.controls.maxDistance) / offset.length());
+        this.camera.position.copy(this.controls.target).add(offset);
+        this.controls.update(); this.dirty = true;
+      },
+      onAdjust
+    });
 
     /** @param {Event} event */
     this.onLost = event => {
@@ -206,6 +218,7 @@ export class PointCloudViewer {
     try {
       this.points.material.uniforms.uMode.value = 3;
       this.renderer.render(this.scene, this.camera);
+      context.filter = this.gestures.state.filter;
       context.drawImage(this.renderer.domElement, 0, 0, canvas.width, canvas.height);
     } finally {
       this.points.material.uniforms.uMode.value = mode;
@@ -221,6 +234,7 @@ export class PointCloudViewer {
     cancelAnimationFrame(this.animation);
     this.observer?.disconnect();
     window.removeEventListener('resize', this.resize);
+    this.gestures.dispose();
     this.controls.dispose();
     this.points.geometry.dispose();
     this.points.material.dispose();

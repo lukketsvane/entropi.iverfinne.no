@@ -1,6 +1,6 @@
 const MAX_UPLOAD = 4_000_000;
 const CHUNK = 2_000_000;
-const MAX_ARTIFACT = 64_000_000;
+const MAX_ARTIFACT = 96_000_000;
 const ID = /^[a-zA-Z0-9_-]{8,128}$/;
 const noStore = {'Cache-Control': 'no-store'};
 /** @param {string} error @param {number} status */
