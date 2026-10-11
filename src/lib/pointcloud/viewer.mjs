@@ -87,9 +87,9 @@ export class PointCloudViewer {
         '  vec3 depthColor = mix(farTone, nearTone, vDepth);',
         '  vec3 rgb = uMode < 0.5 ? vColor : (uMode < 1.5 ? silver : depthColor);',
         '  gl_FragColor = vec4(rgb, a * 0.97);',
+        '  #include <colorspace_fragment>',
         '}'
       ].join('\n'),
-      vertexColors: true,
       transparent: true,
       depthWrite: false,
       depthTest: true,
