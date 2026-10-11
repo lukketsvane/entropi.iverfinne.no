@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {estimateTranslation, registerFrames, stitchPanorama} from '../static/pointcloud/panorama.mjs';
+import {estimateTranslation, registerFrames, stitchPanorama, captureSnapshot} from '../static/pointcloud/panorama.mjs';
 import {depthTiles, mergeDepthTile, estimateImageDepth} from '../static/pointcloud/tiles.mjs';
 import {FrameRecorder} from '../src/lib/pointcloud/recorder.mjs';
 import {imageToPointCloud} from '../static/pointcloud/math.mjs';
@@ -16,6 +16,14 @@ function view(offsetX=0,offsetY=0,width=160,height=120) {
   }
   return {data,width,height};
 }
+test('native ImageData prototype accessors survive the capture boundary',()=>{
+  const pixels=view();
+  const imageData=Object.create({get data(){return pixels.data;},get width(){return pixels.width;},get height(){return pixels.height;}});
+  assert.deepEqual({...imageData},{});
+  const frame=captureSnapshot(imageData);
+  assert.equal(frame.width,160);assert.equal(frame.height,120);assert.equal(frame.data,pixels.data);
+  assert.deepEqual({...frame},pixels);
+});
 test('registered pan follows real overlapping image features, including vertical movement',()=>{
   const a=view(),b=view(25,5),c=view(50,10);
   const move=estimateTranslation(a,b);

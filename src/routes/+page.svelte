@@ -7,6 +7,7 @@
 	import { FrameRecorder } from '../lib/pointcloud/recorder.mjs';
 	import { imageToPointCloud, pointCloudPLY, pointStride } from '../../static/pointcloud/math.mjs';
 	import { estimateImageDepth } from '../../static/pointcloud/tiles.mjs';
+	import { captureSnapshot } from '../../static/pointcloud/panorama.mjs';
 	import '../lib/pointcloud/studio.css';
 
 	type Pixels = { data: Uint8ClampedArray; width: number; height: number };
@@ -82,7 +83,7 @@
 		if (!context) throw new Error('Kunne ikkje lese biletet.');
 		context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
 		context.drawImage(source, 0, 0, canvas.width, canvas.height);
-		return context.getImageData(0, 0, canvas.width, canvas.height);
+		return captureSnapshot(context.getImageData(0, 0, canvas.width, canvas.height));
 	}
 	const recorder = new FrameRecorder({
 		capture: () => video?.readyState >= 2 && video.videoWidth ? pixelsFor(video, video.videoWidth, video.videoHeight) : null,
@@ -112,7 +113,7 @@
 		if (event.detail === 0) void finishCapture([pixelsFor(video, video.videoWidth, video.videoHeight)]);
 	}
 	function stitch(frames: Pixels[]): Promise<Capture> {
-		if (frames.length === 1) return Promise.resolve({ ...frames[0], inputFrames: 1, registeredFrames: 1 });
+		if (frames.length === 1) return Promise.resolve({ ...captureSnapshot(frames[0]), inputFrames: 1, registeredFrames: 1 });
 		return new Promise((resolve, reject) => {
 			const worker = new Worker('/pointcloud/panorama-worker.mjs?v=5', { type: 'module' });
 			panoramaWorker = worker;

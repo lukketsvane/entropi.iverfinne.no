@@ -1,4 +1,9 @@
 /** @typedef {{data: Uint8ClampedArray, width: number, height: number}} Frame */
+/** ImageData stores its dimensions on prototype accessors, not enumerable fields.
+ * @param {Frame} frame */
+export function captureSnapshot(frame) {
+  return {data:frame.data,width:frame.width,height:frame.height};
+}
 /** @param {Frame} frame */
 function gradients(frame) {
   const scale = 128 / Math.max(frame.width, frame.height);
