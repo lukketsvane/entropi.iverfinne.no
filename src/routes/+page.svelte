@@ -142,6 +142,11 @@
 			clearResult(); captured = null; progress = null; mode = 'working';
 			showPixels(frames[0]); stopCamera();
 			announcement = frames.length > 1 ? 'Set saman overlappande bilete.' : 'Lagar punktsky.';
+			// The worker takes ownership of transferred ArrayBuffers. Keep a real
+			// frame copy so a failed stitch can still produce a valid point cloud.
+			const fallback = frames.length > 1
+				? { ...frames[0], data: new Uint8ClampedArray(frames[0].data) }
+				: frames[0];
 			let result: Capture;
 			try {
 				result = await stitch(frames);
@@ -149,7 +154,7 @@
 				// If registration cannot be completed, keep the actual captured image
 				// rather than leaving a black screen. Never invent additional views.
 				if (disposed || id !== generation) return;
-				result = { ...frames[0], inputFrames: frames.length, registeredFrames: 1 };
+				result = { ...fallback, inputFrames: frames.length, registeredFrames: 1 };
 				announcement = 'Kunne ikkje registrere panoramaet. Lagar punktsky frå det første biletet.';
 				console.warn('Panorama registration failed; using original captured frame:', error);
 			}
