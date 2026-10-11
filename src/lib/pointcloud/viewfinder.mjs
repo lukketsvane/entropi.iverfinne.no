@@ -97,6 +97,11 @@ export class Viewfinder {
       this.fallback.putImageData(this.output,0,0);
     }
   }
+  clear() {
+    this.source=null;
+    if(this.gl&&!this.gl.isContextLost()) {this.gl.clearColor(0,0,0,1);this.gl.clear(this.gl.COLOR_BUFFER_BIT);}
+    else if(this.fallback) {this.fallback.fillStyle='#000';this.fallback.fillRect(0,0,this.canvas.width,this.canvas.height);}
+  }
   dispose() {
     if(this.disposed)return;this.disposed=true;cancelAnimationFrame(this.animation);
     this.gl?.deleteTexture(this.texture ?? null);this.gl?.deleteBuffer(this.buffer ?? null);this.gl?.deleteProgram(this.program ?? null);

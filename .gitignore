@@ -24,3 +24,9 @@ vite.config.ts.timestamp-*
 
 # Local copies of public AI assets, used only for verification
 .pointcloud-cache/
+
+# Prepared from the pinned MediaPipe package and verified official face model
+static/pointcloud/vision/tasks-vision.js
+static/pointcloud/vision/MEDIAPIPE-README.md
+static/pointcloud/vision/blaze-face-short-range.tflite
+static/pointcloud/vision/wasm/

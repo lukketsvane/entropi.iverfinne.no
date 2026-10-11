@@ -1,4 +1,5 @@
 /** Genuine XYZ projection for browsers without a WebGL2 context. */
+import {HeadParallax} from './head-parallax.mjs';
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 export class CanvasPointCloudViewer {
   /** @param {HTMLElement} host @param {PointCloud} cloud */
@@ -9,6 +10,9 @@ export class CanvasPointCloudViewer {
     this.context=context;host.replaceChildren(this.canvas);this.canvas.style.touchAction='none';
     this.disposed=false;this.dirty=true;this.auto=true;this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.pointSize=1;
     this.style='mono';
+    this.parallax=new HeadParallax();
+    this.reducedMotion=globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    this.auto=!this.reducedMotion;
     /** @type {Map<number,{x:number,y:number}>} */ this.pointers=new Map();
     const stride=Math.max(1,Math.ceil(cloud.count/21000));
     this.indices=Array.from({length:Math.ceil(cloud.count/stride)},(_,i)=>i*stride);
@@ -44,20 +48,22 @@ export class CanvasPointCloudViewer {
       if(this.disposed)return;this.animation=requestAnimationFrame(frame);
       if(document.hidden||time-previous<65)return;
       previous=time;if(this.auto){this.yaw+=.003;this.dirty=true;}
-      if(this.dirty){this.render();this.dirty=false;}
+      if(this.dirty||this.parallax.moving){this.render(time);this.dirty=false;}
     };
     this.animation=requestAnimationFrame(frame);
   }
-  render() {
+  /** @param {number} [time] */
+  render(time=performance.now()) {
     const {width,height}=this.canvas,ctx=this.context,positions=this.cloud.positions,colors=this.cloud.colors;
     const cy=Math.cos(this.yaw),sy=Math.sin(this.yaw),cp=Math.cos(this.pitch),sp=Math.sin(this.pitch);
     const radius=Math.max(.01,this.cloud.radius),distance=radius*2.8/this.zoom,focal=Math.min(width,height)*1.08;
+    const eye=this.parallax.offsets(distance,width/height,time,this.reducedMotion);
     ctx.fillStyle='#000';ctx.fillRect(0,0,width,height);
     for(let i=0;i<this.indices.length;i++) {
       const at=this.indices[i]*3,x=positions[at],y=positions[at+1],z=positions[at+2];
-      const rx=x*cy+z*sy,rz=-x*sy+z*cy,ry=y*cp-rz*sp,depth=distance-(y*sp+rz*cp);
-      this.projected[i*3]=width/2+this.panX+rx*focal/depth;
-      this.projected[i*3+1]=height/2+this.panY-ry*focal/depth;this.projected[i*3+2]=depth;
+      const rx=x*cy+z*sy,rz=-x*sy+z*cy,ry=y*cp-rz*sp,depth=distance+eye.z-(y*sp+rz*cp);
+      this.projected[i*3]=width/2+this.panX+focal*(eye.scale*(rx-eye.x)/depth+eye.x/eye.screen);
+      this.projected[i*3+1]=height/2+this.panY-focal*(eye.scale*(ry-eye.y)/depth+eye.y/eye.screen);this.projected[i*3+2]=depth;
     }
     this.order.sort((a,b)=>this.projected[b*3+2]-this.projected[a*3+2]);
     for(const i of this.order) {
@@ -77,6 +83,8 @@ export class CanvasPointCloudViewer {
       const size=Math.max(1,Math.min(4,radius*.0087*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
     }
   }
+  /** @param {import('./head-parallax.mjs').HeadPose|null} pose */
+  setHeadPose(pose){this.parallax.setPose(pose);if(pose)this.auto=false;this.dirty=true;}
   /** @param {'color'|'silver'|'depth'|'mono'|'crt'} style */ setStyle(style){this.style=style;this.dirty=true;}
   /** @param {number} size */ setPointSize(size){this.pointSize=size;this.dirty=true;}
   reset(){this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.dirty=true;}

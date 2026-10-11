@@ -4,13 +4,14 @@
 	"version": "0.1.0",
 	"type": "module",
 	"scripts": {
+		"predev": "node scripts/prepare-head-tracking.mjs",
 		"dev": "vite dev --host",
-		"build": "vite build",
+		"build": "node scripts/prepare-head-tracking.mjs && vite build",
 		"preview": "vite preview --host",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-		"test": "node --test tests/*.test.mjs",
+		"test": "node scripts/prepare-head-tracking.mjs && node --test tests/*.test.mjs",
 		"check:pointcloud": "python3 scripts/prepare-point-cloud.py && node scripts/check-point-cloud.mjs"
 	},
 	"devDependencies": {
@@ -26,6 +27,7 @@
 	},
 	"description": "Eit kamera som måler uorden.",
 	"dependencies": {
+		"@mediapipe/tasks-vision": "0.10.32",
 		"@sparkjsdev/spark": "^2.3.1",
 		"three": "^0.186.1"
 	}
