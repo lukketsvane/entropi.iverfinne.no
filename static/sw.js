@@ -29,7 +29,7 @@ self.addEventListener('fetch', (e) => {
 	if (req.method !== 'GET') return;
 	const url = new URL(req.url);
 	if (url.origin !== location.origin) return;
-	if (url.pathname === '/sw.js') return;
+	if (url.pathname === '/sw.js' || url.pathname.startsWith('/triposplat')) return;
 
 	if (req.mode === 'navigate') {
 		e.respondWith(
