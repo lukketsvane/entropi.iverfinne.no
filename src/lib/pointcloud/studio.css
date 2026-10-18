@@ -24,6 +24,8 @@
 .studio .quality-rail i:nth-child(3) {top:62.5%}
 .studio .quality-rail i:nth-child(4) {top:87.5%}
 .studio .quality-rail i.chosen {width:16px;opacity:1}
+.studio .primitive-rail {inset:0 auto 0 calc(2px + env(safe-area-inset-left))}
+.studio .primitive-rail i {left:0;right:auto}
 .studio .hidden {visibility:hidden;pointer-events:none}
 .studio .access-control {position:absolute;z-index:5;left:calc(16px + env(safe-area-inset-left));bottom:calc(16px + env(safe-area-inset-bottom));width:44px;height:44px;display:grid;place-items:center;padding:0;border:0;background:#000;color:#fff;opacity:0;pointer-events:none;text-decoration:none}
 .studio .access-control:focus-visible {opacity:.7;pointer-events:auto;outline:1px solid #fff5;outline-offset:2px}

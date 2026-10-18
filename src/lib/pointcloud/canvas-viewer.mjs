@@ -2,6 +2,7 @@
 import {HeadParallax} from './head-parallax.mjs';
 import {attachViewerGestures, noAdjust, progressiveIndices} from './viewer-gestures.ts';
 import {nearestC64} from './c64-palette.ts';
+import {primitiveDimensions, applyPrimitivePixels} from './primitive-style.ts';
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 export class CanvasPointCloudViewer {
   /** @param {HTMLElement} host @param {PointCloud} cloud */
@@ -10,6 +11,8 @@ export class CanvasPointCloudViewer {
     const context=this.canvas.getContext('2d',{alpha:true});
     if(!context)throw new Error('Kunne ikkje vise punktskyen.');
     this.context=context;host.replaceChildren(this.canvas);this.canvas.style.touchAction='none';
+    /** @type {import('./primitive-style.ts').PrimitiveLevel} */ this.primitiveLevel=0;
+    /** @type {HTMLCanvasElement|null} */ this.primitiveCanvas=null;
     this.disposed=false;this.dirty=true;this.auto=true;this.yaw=.16;this.pitch=.045;this.zoom=1;this.panX=0;this.panY=0;this.pointSize=1;this.definition=.5;
     this.style='mono';
     this.parallax=new HeadParallax();
@@ -79,19 +82,33 @@ export class CanvasPointCloudViewer {
     };
     this.animation=requestAnimationFrame(frame);
   }
-  /** @param {number} [time] */
-  render(time=performance.now()) {
-    const {width,height}=this.canvas,ctx=this.context,positions=this.cloud.positions,colors=this.cloud.colors;
+  /** @param {number} [time] @param {boolean} [printing] */
+  render(time=performance.now(),printing=false) {
+    const primitive=!printing && this.primitiveLevel;
+    let target=this.canvas,ctx=this.context;
+    if(primitive){
+      this.primitiveCanvas ??= document.createElement('canvas');
+      const size=primitiveDimensions(this.primitiveLevel,this.canvas.width,this.canvas.height);
+      if(this.primitiveCanvas.width!==size.width)this.primitiveCanvas.width=size.width;
+      if(this.primitiveCanvas.height!==size.height)this.primitiveCanvas.height=size.height;
+      target=this.primitiveCanvas;
+      const context=target.getContext('2d',{willReadFrequently:true});
+      if(!context)throw new Error('Kunne ikkje vise pikselmønsteret.');
+      ctx=context;
+    }
+    const {width,height}=target,positions=this.cloud.positions,colors=this.cloud.colors;
+    const scaleX=width/this.canvas.width,scaleY=height/this.canvas.height;
+    const panX=this.panX*scaleX,panY=this.panY*scaleY;
     const cy=Math.cos(this.yaw),sy=Math.sin(this.yaw),cp=Math.cos(this.pitch),sp=Math.sin(this.pitch);
-    const radius=Math.max(.01,this.cloud.radius),distance=radius*2.8/this.zoom,focal=Math.min(width,height)*1.08;
-    const eye=this.parallax.offsets(distance,width/height,time,this.reducedMotion);
+    const radius=Math.max(.01,this.cloud.radius),distance=radius*2.8/this.zoom,focal=Math.min(this.canvas.width,this.canvas.height)*1.08;
+    const eye=this.parallax.offsets(distance,this.canvas.width/this.canvas.height,time,this.reducedMotion);
     ctx.clearRect(0,0,width,height);
     ctx.globalAlpha=Math.min(1,.6+.8*this.definition);
     for(let i=0;i<this.order.length;i++) {
       const at=this.indices[i]*3,x=positions[at],y=positions[at+1],z=positions[at+2];
       const rx=x*cy+z*sy,rz=-x*sy+z*cy,ry=y*cp-rz*sp,depth=distance+eye.z-(y*sp+rz*cp);
-      this.projected[i*3]=width/2+this.panX+focal*(eye.scale*(rx-eye.x)/depth+eye.x/eye.screen);
-      this.projected[i*3+1]=height/2+this.panY-focal*(eye.scale*(ry-eye.y)/depth+eye.y/eye.screen);this.projected[i*3+2]=depth;
+      this.projected[i*3]=width/2+panX+focal*scaleX*(eye.scale*(rx-eye.x)/depth+eye.x/eye.screen);
+      this.projected[i*3+1]=height/2+panY-focal*scaleY*(eye.scale*(ry-eye.y)/depth+eye.y/eye.screen);this.projected[i*3+2]=depth;
     }
     this.order.sort((a,b)=>this.projected[b*3+2]-this.projected[a*3+2]);
     for(const i of this.order) {
@@ -111,10 +128,21 @@ export class CanvasPointCloudViewer {
         ctx.fillStyle=`rgb(${this.paletteColors[c]},${this.paletteColors[c+1]},${this.paletteColors[c+2]})`;
       }
       else {const gray=Math.round(92+(colors[at]*.299+colors[at+1]*.587+colors[at+2]*.114)*.64);ctx.fillStyle=`rgb(${gray},${gray},${gray})`;}
-      const size=Math.max(.25,Math.min(24,radius*.0087*focal/depth*this.pointSize));ctx.fillRect(x-size/2,y-size/2,size,size);
+      const size=Math.max(.25,Math.min(24,radius*.0087*focal/depth*this.pointSize));
+      ctx.fillRect(x-size*scaleX/2,y-size*scaleY/2,size*scaleX,size*scaleY);
     }
     ctx.globalAlpha=1;
+    if(primitive){
+      const image=ctx.getImageData(0,0,width,height);
+      applyPrimitivePixels(this.primitiveLevel,image.data,width,height);
+      ctx.putImageData(image,0,0);
+      this.context.clearRect(0,0,this.canvas.width,this.canvas.height);
+      this.context.imageSmoothingEnabled=false;
+      this.context.drawImage(target,0,0,this.canvas.width,this.canvas.height);
+    }
   }
+  /** @param {import('./primitive-style.ts').PrimitiveLevel} level */
+  setPrimitiveLevel(level){this.primitiveLevel=level;this.dirty=true;}
   /** @param {import('./head-parallax.mjs').HeadPose|null} pose */
   setHeadPose(pose){this.lastPose=pose;if(!this.touching)this.parallax.setPose(pose);if(pose)this.auto=false;this.dirty=true;}
   /** @param {'color'|'silver'|'depth'|'mono'|'crt'} style */ setStyle(style){this.style=style;this.dirty=true;}
@@ -126,7 +154,7 @@ export class CanvasPointCloudViewer {
     canvas.height=Math.max(1,Math.min(1024,Math.round(384*this.canvas.height/this.canvas.width)));
     const context=canvas.getContext('2d');if(!context)throw new Error('Kunne ikkje lese punktskyen.');
     const style=this.style;
-    try{this.style='mono';this.render();context.fillStyle='#000';context.fillRect(0,0,canvas.width,canvas.height);context.filter=this.gestures.state.filter;context.drawImage(this.canvas,0,0,canvas.width,canvas.height);}
+    try{this.style='mono';this.render(performance.now(),true);context.fillStyle='#000';context.fillRect(0,0,canvas.width,canvas.height);context.filter=this.gestures.state.filter;context.drawImage(this.canvas,0,0,canvas.width,canvas.height);}
     finally{this.style=style;this.render();this.dirty=true;}
     return canvas;
   }

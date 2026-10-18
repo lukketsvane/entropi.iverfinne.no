@@ -5,6 +5,7 @@ import {HeadParallax} from './head-parallax.mjs';
 import {attachViewerGestures, noAdjust, progressiveIndices} from './viewer-gestures.ts';
 import {rotateTouchCamera, transformTouchCamera} from './touch-camera.ts';
 import {nearestC64} from './c64-palette.ts';
+import {PrimitiveEffect} from './primitive-effect.mjs';
 
 /** @typedef {ReturnType<typeof import('../../../static/pointcloud/math.mjs').imageToPointCloud>} PointCloud */
 
@@ -33,6 +34,7 @@ export class PointCloudViewer {
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 1.75));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.primitive = new PrimitiveEffect(this.renderer);
     host.replaceChildren(this.renderer.domElement);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.01, 100);
@@ -127,6 +129,10 @@ export class PointCloudViewer {
       toneMapped: false
     });
     this.points = new THREE.Points(geometry, material);
+    // Point sizes follow the active render target, including the early-PC pixel grid.
+    this.points.onBeforeRender = renderer => {
+      material.uniforms.uHeight.value = renderer.getRenderTarget()?.height ?? renderer.domElement.height;
+    };
     this.points.frustumCulled = false;
     this.scene.add(this.points);
     this.gestures = attachViewerGestures(this.renderer.domElement, {
@@ -187,7 +193,7 @@ export class PointCloudViewer {
       previous = time;
       this.controls.update();
       if (this.dirty || this.parallax.moving) {
-        this.renderer.render(this.scene, this.parallax.camera(this.camera,this.controls.target,time,this.reducedMotion));
+        this.primitive.render(this.scene, this.parallax.camera(this.camera,this.controls.target,time,this.reducedMotion));
         this.dirty = false;
       }
     };
@@ -200,6 +206,12 @@ export class PointCloudViewer {
     if (!this.touching) this.parallax.setPose(pose);
     if(pose)this.controls.autoRotate=false;
     this.dirty=true;
+  }
+
+  /** @param {import('./primitive-style.ts').PrimitiveLevel} level */
+  setPrimitiveLevel(level) {
+    this.primitive.setLevel(level);
+    this.dirty = true;
   }
 
   /** @param {'color' | 'silver' | 'depth' | 'mono' | 'crt'} style */
@@ -244,7 +256,7 @@ export class PointCloudViewer {
       context.drawImage(this.renderer.domElement, 0, 0, canvas.width, canvas.height);
     } finally {
       this.points.material.uniforms.uMode.value = mode;
-      this.renderer.render(this.scene, this.camera);
+      this.primitive.render(this.scene, this.camera);
       this.dirty = true;
     }
     return canvas;
@@ -260,6 +272,7 @@ export class PointCloudViewer {
     this.controls.dispose();
     this.points.geometry.dispose();
     this.points.material.dispose();
+    this.primitive.dispose();
     this.renderer.domElement.removeEventListener('webglcontextlost', this.onLost);
     this.renderer.domElement.removeEventListener('pointerdown', this.onInteract);
     this.renderer.domElement.removeEventListener('wheel', this.onInteract);

@@ -6,6 +6,7 @@
 	import { reconstructionFrames, reconstructGaussian } from '../lib/pointcloud/reconstruct.mjs';
 	import { createGaussianViewer } from '../lib/pointcloud/gaussian-viewer.mjs';
 	import { attachEdgeQualitySlider, type QualityLevel } from '../lib/pointcloud/edge-quality-slider';
+	import { PRIMITIVE_MODES, type PrimitiveLevel } from '../lib/pointcloud/primitive-style.ts';
 	import { Viewfinder } from '../lib/pointcloud/viewfinder.mjs';
 	import { FrameRecorder } from '../lib/pointcloud/recorder.mjs';
 	import { ShakeToClear } from '../lib/pointcloud/shake.mjs';
@@ -37,6 +38,9 @@
 	let qualityLevel = $state<QualityLevel>(2);
 	let qualityActive = $state(false);
 	let qualitySlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
+	let primitiveLevel = $state<PrimitiveLevel>(0);
+	let primitiveActive = $state(false);
+	let primitiveSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
 	const qualityDensity = [0, .4, .7, 1];
 	const qualityLabel = ['Lokal djupne på eininga.', 'Shadow med låg detalj.', 'Shadow med normal detalj.', 'Shadow med høg detalj.'];
 	let pendingTaps: Pixels[] = [];
@@ -81,6 +85,13 @@
 		qualitySlider?.setLevel(level);
 		try { window.localStorage?.setItem('entropi-quality', String(level)); } catch {}
 		announcement = `Neste opptak: ${qualityLabel[level]}`;
+	}
+	function selectPrimitive(level: PrimitiveLevel) {
+		primitiveLevel = level;
+		primitiveSlider?.setLevel(level);
+		viewer?.setPrimitiveLevel(level);
+		try { window.localStorage?.setItem('entropi-primitive', String(level)); } catch {}
+		announcement = `Pikselstil: ${PRIMITIVE_MODES[level].label}.`;
 	}
 	function adjustViewer(status: string, density: number | null, prefix = '') {
 		if (disposed) return;
@@ -274,6 +285,7 @@
 					(status, density) => { if (!disposed && id === generation) adjustViewer(status, density); }, selectedLevel);
 				if (disposed || id !== generation) { next.dispose(); return; }
 				viewer = next;
+				viewer.setPrimitiveLevel(primitiveLevel);
 				viewerReady = true;
 				downloadName = 'entropi-gaussian.splat';
 				plyUrl = URL.createObjectURL(artifact);
@@ -310,6 +322,7 @@
 			const localViewer = createPointCloudViewer(cloudHost, cloud, error => fail(error, id),
 				(status, density) => { if (!disposed && id === generation) adjustViewer(status, density, selectedLevel === 0 ? 'Lokal djupnebasert punktsky på eininga. ' : 'Lokal djupnebasert punktsky som reserve. '); });
 			localViewer.setStyle('color'); viewer = localViewer;
+			viewer.setPrimitiveLevel(primitiveLevel);
 			viewerReady = true;
 			plyUrl = URL.createObjectURL(new Blob([pointCloudPLY(cloud)], { type: 'application/octet-stream' }));
 			downloadName = 'entropi-punktsky.ply';
@@ -419,8 +432,14 @@
 			const saved = window.localStorage?.getItem('entropi-quality');
 			if (saved && /^[0-3]$/.test(saved)) qualityLevel = Number(saved) as QualityLevel;
 		} catch {}
+		try {
+			const saved = window.localStorage?.getItem('entropi-primitive');
+			if (saved && /^[0-3]$/.test(saved)) primitiveLevel = Number(saved) as PrimitiveLevel;
+		} catch {}
 		qualitySlider = attachEdgeQualitySlider(window, {initialLevel: qualityLevel, onLevel: selectQuality,
 			onActive: active => { qualityActive = active; }});
+		primitiveSlider = attachEdgeQualitySlider(window, {edge: 'left', initialLevel: primitiveLevel, onLevel: selectPrimitive,
+			onActive: active => { primitiveActive = active; }});
 		shake = new ShakeToClear({ target: window, hasDraft: () => recorder.active || pendingTaps.length > 0 || mode !== 'camera', clear: clearCanvas });
 		shake.start();
 		printer = new PX10Printer();
@@ -464,6 +483,7 @@
 		return () => {
 			disposed = true; generation++; reconstruction?.abort(); capturedFrames = []; fallbackFrames = null; clearTimeout(resumeTimer); clearTapBatch(); recorder.abort();
 			qualitySlider?.dispose(); qualitySlider = null;
+			primitiveSlider?.dispose(); primitiveSlider = null;
 			shake?.dispose(); shake = null;
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
@@ -494,7 +514,7 @@
 		{/if}
 	</div>
 	{#if mode === 'camera' || mode === 'recording'}
-		<button class="capture-plane" type="button" aria-label="Trykk for bilete og utskrift. Hald inne for panorama. Dra ein finger langs høgre kant for fire detaljnivå. Rist for å tømme lerretet. Dei første trykka gir systemløyve når det trengst."
+		<button class="capture-plane" type="button" aria-label="Trykk for bilete og utskrift. Hald inne for panorama. Dra ein finger langs høgre kant for fire detaljnivå, eller langs venstre kant for fire pikselstilar frå C64 til grøn monokrom. Rist for å tømme lerretet. Dei første trykka gir systemløyve når det trengst."
 			onpointerdown={beginCapture} onpointerup={endCapture} onpointercancel={cancelCapture} onlostpointercapture={cancelCapture} oncontextmenu={event => event.preventDefault()} onclick={captureClick}></button>
 		<button class="access-control" type="button" aria-label="Vel bilete frå telefonen" onclick={openCapture}><i class="plus" aria-hidden="true"></i></button>
 	{:else if mode === 'working'}
@@ -504,9 +524,12 @@
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
 	<!-- Native keyboard/screen-reader alternatives stay invisible until focus. -->
-	<div class="cloud" class:hidden={mode !== 'done' || !viewerReady} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} onpointercancel={() => { cloudPointer = null; }} oncontextmenu={event => event.preventDefault()} role="img" aria-label="3D-scene. Hald inne utan å flytte fingeren for utskrift. Dra med ein finger for å rotere. Dra og knip med to fingrar for å flytte scena og zoome samstundes. Dra med tre fingrar loddrett for talet på element og kvaliteten på neste bilete, eller vassrett for kor skarpe og tette punkta er. Dra ein finger langs høgre kant for fire detaljnivå på neste opptak. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
+	<div class="cloud" class:hidden={mode !== 'done' || !viewerReady} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} onpointercancel={() => { cloudPointer = null; }} oncontextmenu={event => event.preventDefault()} role="img" aria-label="3D-scene. Hald inne utan å flytte fingeren for utskrift. Dra med ein finger for å rotere. Dra og knip med to fingrar for å flytte scena og zoome samstundes. Dra med tre fingrar loddrett for talet på element og kvaliteten på neste bilete, eller vassrett for kor skarpe og tette punkta er. Dra ein finger langs høgre kant for fire detaljnivå på neste opptak, eller langs venstre kant for C64, EGA, CGA og grøn monokrom med pikselmønster. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
 	<div class="quality-rail" class:active={qualityActive} aria-hidden="true">
 		{#each [3, 2, 1, 0] as level}<i class:chosen={qualityLevel === level}></i>{/each}
+	</div>
+	<div class="quality-rail primitive-rail" class:active={primitiveActive} aria-hidden="true">
+		{#each [3, 2, 1, 0] as level}<i class:chosen={primitiveLevel === level}></i>{/each}
 	</div>
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
@@ -514,6 +537,7 @@
 	{/if}
 	<input bind:this={photoInput} type="file" accept="image/*" multiple onchange={capture} oncancel={() => void startCamera()} tabindex="-1" aria-label="Kamerabilete" />
 	<input class="sr-only" type="range" min="0" max="3" step="1" value={qualityLevel} aria-label="Detaljnivå for neste opptak" aria-valuetext={qualityLabel[qualityLevel]} oninput={event => selectQuality(Number(event.currentTarget.value) as QualityLevel)} />
+	<input class="sr-only" type="range" min="0" max="3" step="1" value={primitiveLevel} aria-label="Pikselstil frå tidlege datamaskiner" aria-valuetext={PRIMITIVE_MODES[primitiveLevel].label} oninput={event => selectPrimitive(Number(event.currentTarget.value) as PrimitiveLevel)} />
 	<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
 	<span class="sr-only" role="status" aria-live="polite">{printerAnnouncement}</span>
 </main>

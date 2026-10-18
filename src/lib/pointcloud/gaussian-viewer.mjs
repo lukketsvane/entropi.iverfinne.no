@@ -4,6 +4,7 @@ import {HeadParallax} from './head-parallax.mjs';
 import {attachViewerGestures, noAdjust} from './viewer-gestures.ts';
 import {rotateTouchCamera, transformTouchCamera} from './touch-camera.ts';
 import {nearestC64} from './c64-palette.ts';
+import {PrimitiveEffect} from './primitive-effect.mjs';
 
 /** @typedef {{position:number[],target:number[],up:number[],fov:number,aspect?:number,bounds?:{center:number[],radius:number}}} SceneCamera */
 
@@ -16,6 +17,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
   const renderer = new THREE.WebGLRenderer({antialias: false, alpha: true, powerPreference: 'high-performance'});
   renderer.setClearColor(0x000000, 0);
   renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 1.5));
+  const primitive = new PrimitiveEffect(renderer);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(55, 1, .01, 1000);
   const lodBudget = globalThis.matchMedia?.('(pointer:coarse)').matches ? 450_000 : 3_250_000;
@@ -84,7 +86,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
     disposed = true; cancelAnimationFrame(animation); observer?.disconnect();
     signal.removeEventListener('abort', dispose);
     renderer.domElement.removeEventListener('webglcontextlost', lost);
-    gestures.dispose(); controls.dispose(); mesh.dispose(); spark.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
+    gestures.dispose(); controls.dispose(); mesh.dispose(); spark.dispose(); primitive.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
   }
   signal.addEventListener('abort', dispose, {once: true});
   renderer.domElement.addEventListener('webglcontextlost', lost);
@@ -128,7 +130,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
     };
     controls.addEventListener('change', updateZoomLimit);
     observer = new ResizeObserver(resize); observer.observe(host); resize();
-    await spark.update({scene, camera}); renderer.render(scene, camera);
+    await spark.update({scene, camera}); primitive.render(scene, camera);
     signal.throwIfAborted();
     let last = 0;
     const frame = (/** @type {number} */ time) => {
@@ -136,10 +138,11 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
       animation = requestAnimationFrame(frame);
       if (document.hidden || time - last < 33) return;
       last = time; controls.update();
-      renderer.render(scene, parallax.camera(camera, controls.target, time, reduced));
+      primitive.render(scene, parallax.camera(camera, controls.target, time, reduced));
     };
     animation = requestAnimationFrame(frame);
     return {
+      setPrimitiveLevel(/** @type {import('./primitive-style.ts').PrimitiveLevel} */ level) { primitive.setLevel(level); },
       setHeadPose(/** @type {import('./head-parallax.mjs').HeadPose|null} */ pose) { lastPose = pose || {x: 0, y: 0, z: 0}; if (!touching) parallax.setPose(pose); },
       snapshot() {
         if (disposed) throw new Error('Gaussian-scena er tømd.');
@@ -152,6 +155,7 @@ export async function createGaussianViewer(host, bytes, initial, onError, signal
         context.fillStyle = '#000'; context.fillRect(0, 0, canvas.width, canvas.height);
         context.filter = gestures.state.filter;
         context.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height);
+        primitive.render(scene, camera);
         return canvas;
       },
       dispose

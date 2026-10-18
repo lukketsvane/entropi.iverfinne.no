@@ -10,6 +10,7 @@ import { imageToPointCloud, pointCloudPLY, pointStride } from '../static/pointcl
 import { WIDTH, PRINTER_NAME, buildPrintJob, joinBytes } from '../src/lib/print/px10-protocol.mjs';
 import { PX10Printer } from '../src/lib/print/printer.mjs';
 import { reconstructionFrames, processResolution } from '../src/lib/pointcloud/reconstruct.mjs';
+import { PRIMITIVE_MODES } from '../src/lib/pointcloud/primitive-style.ts';
 
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
@@ -17,6 +18,7 @@ export const harness = {
   beginCapture, endCapture, captureClick, retake, retry, cloudDown, cloudUp,
   get mode(){ return mode; }, get printer(){ return printer; },
   get announcement(){ return announcement; }, get quality(){ return qualityLevel; },
+  get primitive(){ return primitiveLevel; },
   get draft(){ return captured; }, get download(){ return plyUrl; },
   mount(elements){ video=elements.video; finder=elements.finder; cloudHost=elements.cloud; photoInput=elements.input; }
 };`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -25,7 +27,7 @@ const waitFor = async predicate => {
   while (!predicate()) { if (Date.now() > until) throw new Error('Timed out'); await new Promise(resolve => setTimeout(resolve, 2)); }
 };
 
-function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, gaussian = false, gaussianGate = null, changingFrames = false } = {}) {
+function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, gaussian = false, gaussianGate = null, gaussianViewerGate = null, changingFrames = false, storage = null } = {}) {
   const writes = [], requested = [], paper = buildPrintJob(new Uint8Array(WIDTH * 2));
   const device = new EventTarget(); device.name = PRINTER_NAME; device.id = 'px10';
   const notifier = new EventTarget(); notifier.startNotifications = async () => notifier;
@@ -38,8 +40,8 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   class CameraPrinter extends PX10Printer {
     constructor(){ super({ bluetooth: () => api, storage: () => undefined, delay: 0 }); }
   }
-  let mount, cleanup, viewError, preview, qualitySlider, generated = 0, disposedViews = 0, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, gaussianViews = 0, samples = 0;
-  const gaussianDensities = [], gaussianDetailLevels = [];
+  let mount, cleanup, viewError, preview, generated = 0, disposedViews = 0, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, gaussianViews = 0, samples = 0;
+  const gaussianDensities = [], gaussianDetailLevels = [], primitiveLevels = [], sliders = new Map();
   const track = { stop(){}, readyState: 'live' }, stream = { getTracks: () => [track], getVideoTracks: () => [track] };
   const video = { readyState: 2, videoWidth: 4, videoHeight: 4, srcObject: null, play: async () => {} };
   const document = Object.assign(new EventTarget(), {
@@ -48,6 +50,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     }) })
   });
   const window = new EventTarget();
+  if (storage) window.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
   if (motionPermission !== 'unsupported') window.DeviceMotionEvent = motionPermission === 'direct' ? {} : {
     requestPermission: () => { motionRequests++; return Promise.resolve(motionPermission); }
   };
@@ -60,7 +63,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     '../lib/pointcloud/estimator.mjs': { DepthEstimator: class { dispose(){} } },
     '../lib/pointcloud/viewer.mjs': { createPointCloudViewer: (_, cloud, onError) => {
       generated++; assert.ok(cloud.count > 0); viewError = onError;
-      return { setStyle(){}, setHeadPose(){}, dispose(){ disposedViews++; }, snapshot: () => ({ width: 384, height: 2 }) };
+      return { setStyle(){}, setPrimitiveLevel(level){ primitiveLevels.push({kind: 'local', level}); }, setHeadPose(){}, dispose(){ disposedViews++; }, snapshot: () => ({ width: 384, height: 2 }) };
     } },
     '../lib/pointcloud/reconstruct.mjs': { reconstructionFrames, reconstructGaussian: async (frames, _update, _signal, density) => {
       gaussianDensities.push(density);
@@ -70,13 +73,16 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
       return {bytes: new Uint8Array(32), model: 'Apple SHARP', camera: {}, frames: frames.length};
     } },
     '../lib/pointcloud/edge-quality-slider': { attachEdgeQualitySlider: (_surface, options) => {
-      qualitySlider = {level: options.initialLevel, setLevel(level){ this.level = level; }, select(level){ options.onLevel(level); }, dispose(){}};
-      return qualitySlider;
+      const slider = {level: options.initialLevel, disposed: false, setLevel(level){ this.level = level; }, select(level){ options.onLevel(level); }, dispose(){ this.disposed = true; }};
+      sliders.set(options.edge ?? 'right', slider);
+      return slider;
     } },
+    '../lib/pointcloud/primitive-style.ts': { PRIMITIVE_MODES },
     '../lib/pointcloud/gaussian-viewer.mjs': { createGaussianViewer: async (_, bytes, camera, onError, signal, onAdjust, detailLevel) => {
       generated++; assert.equal(bytes.length, 32); viewError = onError;
       gaussianDetailLevels.push(detailLevel);
-      return {setHeadPose(){}, dispose(){disposedViews++;}, snapshot: () => ({width: 384, height: 2})};
+      if (gaussianViewerGate) await gaussianViewerGate;
+      return {setPrimitiveLevel(level){ primitiveLevels.push({kind: 'gaussian', level}); }, setHeadPose(){}, dispose(){disposedViews++;}, snapshot: () => ({width: 384, height: 2})};
     } },
     '../lib/pointcloud/viewfinder.mjs': { Viewfinder: class { constructor(){ preview = this; } clear(){ this.source = null; } dispose(){} } },
     '../lib/pointcloud/recorder.mjs': { FrameRecorder },
@@ -114,7 +120,9 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     }
   };
   return { ...exports.harness, harness: exports.harness, tap, requested, writes, paper,
-    selectQuality: level => qualitySlider.select(level), gaussianResolutions: () => gaussianDensities.map(processResolution), gaussianDetailLevels: () => gaussianDetailLevels,
+    selectQuality: level => sliders.get('right').select(level), selectPrimitive: level => sliders.get('left').select(level),
+    slider: edge => sliders.get(edge), primitiveLevels: () => primitiveLevels,
+    gaussianResolutions: () => gaussianDensities.map(processResolution), gaussianDetailLevels: () => gaussianDetailLevels,
     enableBluetooth: () => { api = bluetooth; }, advancePointer: ms => { pointerTime += ms; }, gaussianViews: () => gaussianViews,
     holdResult: (move = 0) => {
       const down = {...event, clientX: 100, clientY: 200}; exports.harness.cloudDown(down);
@@ -217,6 +225,76 @@ test('three Shadow levels request increasing detail for held multiview captures'
   }
   assert.deepEqual(camera.gaussianResolutions(), [336, 420, 504]);
   assert.deepEqual(camera.gaussianDetailLevels(), [1, 2, 3]);
+});
+
+test('left primitive rail styles the existing Gaussian scene without changing capture density', async t => {
+  const camera = fixture(false, {gaussian: true}); t.after(camera.cleanup);
+  camera.selectQuality(1); camera.selectPrimitive(3);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.primitiveLevels().length);
+  assert.equal(camera.harness.quality, 1);
+  assert.equal(camera.harness.primitive, 3);
+  assert.deepEqual(camera.gaussianResolutions(), [336]);
+  assert.deepEqual(camera.gaussianDetailLevels(), [1]);
+  assert.deepEqual(camera.primitiveLevels(), [{kind: 'gaussian', level: 3}]);
+  camera.selectPrimitive(1);
+  assert.deepEqual(camera.primitiveLevels(), [{kind: 'gaussian', level: 3}, {kind: 'gaussian', level: 1}]);
+  assert.equal(camera.harness.quality, 1);
+  assert.equal(camera.slider('right').level, 1);
+  assert.equal(camera.generated(), 1);
+  assert.deepEqual(camera.gaussianResolutions(), [336]);
+});
+
+test('a primitive choice made during Gaussian viewer initialization applies when it becomes ready', async t => {
+  let resolve;
+  const gaussianViewerGate = new Promise(done => { resolve = done; });
+  const camera = fixture(false, {gaussian: true, gaussianViewerGate}); t.after(() => { resolve(); camera.cleanup(); });
+  camera.selectPrimitive(1);
+  camera.tap(); await waitFor(() => camera.generated() === 1);
+  assert.deepEqual(camera.primitiveLevels(), []);
+  camera.selectPrimitive(3); resolve();
+  await waitFor(() => camera.primitiveLevels().length === 1);
+  assert.deepEqual(camera.primitiveLevels(), [{kind: 'gaussian', level: 3}]);
+  assert.equal(camera.harness.mode, 'done');
+});
+
+test('local fallback receives primitive choices immediately and keeps the choice after retaking', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  camera.selectQuality(0); camera.selectPrimitive(2);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  assert.deepEqual(camera.primitiveLevels(), [{kind: 'local', level: 2}]);
+  camera.selectPrimitive(3);
+  assert.deepEqual(camera.primitiveLevels().at(-1), {kind: 'local', level: 3});
+  await camera.harness.retake();
+  assert.equal(camera.harness.primitive, 3);
+  assert.equal(camera.slider('left').level, 3);
+  camera.tap(); await waitFor(() => camera.generated() === 2 && camera.harness.mode === 'done');
+  assert.deepEqual(camera.primitiveLevels().at(-1), {kind: 'local', level: 3});
+  assert.deepEqual(camera.gaussianResolutions(), []);
+  assert.equal(camera.harness.quality, 0);
+});
+
+test('primitive rail persists its own level and restores it independently of density', t => {
+  const storage = new Map([['entropi-quality', '3'], ['entropi-primitive', '2']]);
+  const camera = fixture(false, {storage}); t.after(camera.cleanup);
+  assert.equal(camera.harness.primitive, 2);
+  assert.equal(camera.slider('left').level, 2);
+  assert.equal(camera.harness.quality, 3);
+  camera.selectPrimitive(1);
+  assert.equal(storage.get('entropi-primitive'), '1');
+  assert.equal(storage.get('entropi-quality'), '3');
+  const restored = fixture(false, {storage}); t.after(restored.cleanup);
+  assert.equal(restored.harness.primitive, 1);
+  assert.equal(restored.slider('left').level, 1);
+  assert.equal(restored.harness.quality, 3);
+});
+
+test('unmount disposes both edge controls', () => {
+  const camera = fixture(false);
+  assert.ok(camera.slider('left'));
+  assert.ok(camera.slider('right'));
+  camera.cleanup();
+  assert.equal(camera.slider('left').disposed, true);
+  assert.equal(camera.slider('right').disposed, true);
 });
 
 test('Shadow failure identifies on-device reconstruction as a reserve', async t => {
