@@ -52,7 +52,7 @@ async function gpuEngine(manifest, id, cache) {
   progress(id, 'starting');
   const session = await ort.InferenceSession.create(graph, { executionProviders: ['webgpu'], graphOptimizationLevel: 'all',
     externalData: spec.data.map((part, index) => ({ path: part.name, data: parts[index] })) });
-  return { ort, session, max: spec.max, model: spec.model, gpu: true };
+  return { ort, session, max: spec.max, area: spec.pixels ?? Infinity, model: spec.model, gpu: true };
 }
 
 async function cpuEngine(manifest, id, cache) {
@@ -65,11 +65,14 @@ async function cpuEngine(manifest, id, cache) {
   return { ort, session, max: manifest.max, model: manifest.model, gpu: false };
 }
 
+const gpuError = error => Object.assign(error instanceof Error ? error : new Error('GPU-feil.'), { gpu: true });
+
 function engine(id, cpuOnly = false) {
   if (!enginePromise) enginePromise = (async () => {
     const [manifest, cache] = await Promise.all([readManifest(), openCache()]);
     if (!cpuOnly) {
-      try { const gpu = await gpuEngine(manifest, id, cache); if (gpu) return gpu; } catch { /* Fall back to the CPU model. */ }
+      // A failed GPU start is retried by a fresh CPU-only worker; two runtimes in one worker exhaust iOS memory.
+      try { const gpu = await gpuEngine(manifest, id, cache); if (gpu) return gpu; } catch (error) { throw gpuError(error); }
     }
     return cpuEngine(manifest, id, cache);
   })().catch(error => { enginePromise = null; throw error; });
@@ -77,7 +80,7 @@ function engine(id, cpuOnly = false) {
 }
 
 async function infer(current, rgba, width, height) {
-  const size = fitSize(width, height, current.max);
+  const size = fitSize(width, height, current.max, current.area);
   const input = size.width === width && size.height === height ? rgba : resizePixels({ data: rgba, width, height }, size.width, size.height).data;
   const tensor = new current.ort.Tensor('float32', normalizedImage(input, size.width, size.height), [1, 3, size.height, size.width]);
   let outputs;
@@ -100,21 +103,15 @@ self.onmessage = async event => {
   try {
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 32 || height < 32 || width > 1536 || height > 1536 || width % 32 || height % 32) throw new Error('Ugyldig storleik for djupnemodellen.');
     const pixels = new Uint8ClampedArray(rgba);
-    let current = await engine(id, gpuLimit <= 0), result;
-    if (current.gpu && gpuLimit <= 0) { await current.session.release?.().catch(() => {}); enginePromise = null; current = await engine(id, true); }
+    const current = await engine(id, gpuLimit <= 0);
     const max = current.gpu ? Math.min(current.max, gpuLimit) : current.max;
     progress(id, 'estimating');
+    let result;
     try { result = await infer({ ...current, max }, pixels, width, height); }
-    catch (error) {
-      if (!current.gpu) throw error;
-      // A GPU without enough memory still gets an image from the smaller CPU model.
-      await current.session.release?.().catch(() => {});
-      enginePromise = null; current = await engine(id, true);
-      result = await infer(current, pixels, width, height);
-    }
+    catch (error) { throw current.gpu ? gpuError(error) : error; }
     self.postMessage({ id, type: 'result', depth: result.depth.buffer, width: result.width, height: result.height, model: current.model }, [result.depth.buffer]);
   } catch (error) {
-    self.postMessage({ id, type: 'error', message: error?.message || 'Kunne ikkje berekne djupna.' });
+    self.postMessage({ id, type: 'error', gpu: error?.gpu === true, message: error?.message || 'Kunne ikkje berekne djupna.' });
   } finally {
     running = false;
   }

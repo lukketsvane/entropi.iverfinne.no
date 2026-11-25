@@ -2,7 +2,7 @@
  * Verifiserte modellar har sin eigen cache; ikkje slett han når appskallet blir oppdatert.
  * HTML: nett først (ny deploy syner med ein gong), cache som reserve.
  * Alt anna frå same opphav: cache først, oppdater i bakgrunnen. */
-const V = 'entropi-v14-depth-pro-2-b';
+const V = 'entropi-v15-depth-pro-2-b';
 
 self.addEventListener('install', (e) => {
 	e.waitUntil(
@@ -33,18 +33,20 @@ self.addEventListener('fetch', (e) => {
 	// Depth models are verified and cached by the depth worker; storing them here too doubles 150 MB.
 	if (url.pathname === '/sw.js' || url.pathname.startsWith('/pointcloud/models/') || url.pathname.startsWith('/api/') || url.pathname.startsWith('/triposplat') || url.pathname === '/gauss' || url.pathname.startsWith('/gauss/') || url.pathname === '/gauss.webmanifest' || url.pathname === '/gauss-icon.png') return;
 
-	if (req.mode === 'navigate') {
+	// The depth worker and its runtime must match the deployed models, and the version poll must see new deploys.
+	if (url.pathname.startsWith('/_app/version.json')) return;
+	if (req.mode === 'navigate' || (url.pathname.startsWith('/pointcloud/') && url.pathname.endsWith('.mjs'))) {
+		const net = fetch(req).then((res) => {
+			if (res.ok) {
+				const copy = res.clone();
+				caches.open(V).then((c) => c.put(url.pathname, copy));
+			}
+			return res;
+		});
 		e.respondWith(
-			Promise.race([
-				fetch(req).then((res) => {
-					if (res.ok) {
-						const copy = res.clone();
-						caches.open(V).then((c) => c.put(url.pathname, copy));
-					}
-					return res;
-				}),
-				new Promise((_, rej) => setTimeout(rej, 3500))
-			]).catch(() => caches.match(url.pathname).then((r) => r || Response.error()))
+			Promise.race([net, new Promise((_, rej) => setTimeout(rej, 3500))]).catch(() =>
+				caches.match(url.pathname).then((r) => r || net)
+			)
 		);
 		return;
 	}

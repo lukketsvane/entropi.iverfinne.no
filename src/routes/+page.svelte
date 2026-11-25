@@ -218,7 +218,7 @@
 	async function openGallery() {
 		if (galleryOpen || (mode !== 'camera' && mode !== 'done')) return;
 		clearTapBatch(); recorder.abort();
-		galleryOpen = true;
+		galleryOpen = true; void processUploads();
 		if (mode === 'camera') { stopCamera(); preview?.clear(); }
 		try {
 			const entries = await gallery.list();
@@ -243,6 +243,8 @@
 				uploading = jobs.length;
 				const job = jobs[0];
 				if (!job) break;
+				if (document.hidden) await new Promise<void>(resolve => { const shown = () => { if (document.hidden) return; document.removeEventListener('visibilitychange', shown); resolve(); }; document.addEventListener('visibilitychange', shown); });
+				if (disposed) break;
 				// Count the attempt before starting, so a file that crashes the page is not retried forever after reloads.
 				if (job.attempts >= 2) { await gallery.drop(job.id); failed++; continue; }
 				await gallery.retry(job);
@@ -310,7 +312,8 @@
 		announcement = selecting ? 'Vel bilete. Trykk på bileta du vil ha med.' : 'Utval avslutta.';
 	}
 	function toggleSelected(id: string) {
-		selected = selected.includes(id) ? selected.filter(item => item !== id) : [...selected, id];
+		if (selected.includes(id)) { selected = selected.filter(item => item !== id); prepared.delete(id); preparedIds = [...prepared.keys()]; }
+		else selected = [...selected, id];
 		selectionArmed = false;
 		announcement = `${selected.length} valt.`;
 		void prepareSelection();
@@ -651,18 +654,20 @@
 	function saveArt(event: MouseEvent) {
 		(event.currentTarget as HTMLAnchorElement).href = art.toDataURL('image/png');
 	}
-	async function decodePhoto(file: Blob): Promise<{ source: CanvasImageSource; width: number; height: number; close(): void }> {
+	async function decodePhoto(file: Blob, max = 1536): Promise<{ source: CanvasImageSource; width: number; height: number; close(): void }> {
+		const url = URL.createObjectURL(file), image = new Image();
+		const loaded = await new Promise<boolean>(resolve => { image.onload = () => resolve(true); image.onerror = () => resolve(false); image.src = url; });
 		if (typeof createImageBitmap === 'function') {
 			try {
-				const bitmap = await createImageBitmap(file);
+				// Decode straight to the working size: a full 24 MP photo is about 100 MB on the phone.
+				const scale = loaded ? Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight)) : 1;
+				const bitmap = await createImageBitmap(file, scale < 1 ? { resizeWidth: Math.round(image.naturalWidth * scale), resizeQuality: 'high' } : {});
+				URL.revokeObjectURL(url);
 				return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
 			} catch { /* iOS can use its native decoder for additional image formats. */ }
 		}
-		const url = URL.createObjectURL(file), image = new Image();
-		try {
-			image.src = url; await image.decode();
-			return { source: image, width: image.naturalWidth, height: image.naturalHeight, close: () => URL.revokeObjectURL(url) };
-		} catch { URL.revokeObjectURL(url); throw new Error('Kunne ikkje opne biletet. Prøv JPEG eller PNG.'); }
+		if (!loaded) { URL.revokeObjectURL(url); throw new Error('Kunne ikkje opne biletet. Prøv JPEG eller PNG.'); }
+		return { source: image, width: image.naturalWidth, height: image.naturalHeight, close: () => URL.revokeObjectURL(url) };
 	}
 	async function captureFiles(files: File[]) {
 		if (!files.length || mode !== 'camera') return;
@@ -850,6 +855,11 @@
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
 		try {
+			// A new depth build starts with a clean record.
+			if (window.localStorage?.getItem('entropi-depth-build') !== '2') {
+				window.localStorage?.removeItem('entropi-depth-crashes'); window.localStorage?.removeItem('entropi-depth-running');
+				window.localStorage?.setItem('entropi-depth-build', '2');
+			}
 			// The page died during a depth run last time: step the GPU model down, then to the CPU model.
 			let crashes = Number(window.localStorage?.getItem('entropi-depth-crashes')) || 0;
 			if (window.localStorage?.getItem('entropi-depth-running')) {
@@ -887,8 +897,11 @@
 		const printerChecks = [0, 300, 1200, 3000].map(delay => setTimeout(restorePrinter, delay));
 		try { preview = new Viewfinder(finder); } catch { announcement = 'Kamerasøkjaren kunne ikkje startast. Trykk for å velje eit bilete.'; }
 		void startCamera();
-		void processUploads();
+		// Queued uploads wait until the camera has settled, and for the gallery after a crash.
+		const uploadTimer = estimator.gpuLimit === Infinity ? setTimeout(() => void processUploads(), 800) : 0;
 		const suspend = () => {
+			// Leaving the page is not a crash, even in the middle of a depth run.
+			try { window.localStorage?.removeItem('entropi-depth-running'); } catch {}
 			clearTimeout(resumeTimer); clearTapBatch(); recorder.abort(); stopCamera();
 			shake?.suspend();
 			printer?.suspend();
@@ -897,6 +910,7 @@
 		const resume = () => {
 			clearTimeout(resumeTimer);
 			if (document.visibilityState !== 'visible') { suspend(); return; }
+			if (depthBusy) try { window.localStorage?.setItem('entropi-depth-running', '1'); } catch {}
 			shake?.start();
 			restorePrinter();
 			if (updated.current && mode === 'camera') { location.reload(); return; }
@@ -909,7 +923,7 @@
 		window.addEventListener('focus', resume); document.addEventListener('visibilitychange', resume);
 		window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', resume);
 		return () => {
-			disposed = true; generation++; clearTimeout(resumeTimer); clearTapBatch(); recorder.abort();
+			disposed = true; generation++; clearTimeout(resumeTimer); clearTimeout(uploadTimer); clearTapBatch(); recorder.abort();
 			presetSlider?.dispose(); presetSlider = null;
 			lookSlider?.dispose(); lookSlider = null; clearTimeout(levelTimer);
 			shake?.dispose(); shake = null;

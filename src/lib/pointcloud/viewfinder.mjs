@@ -4,6 +4,7 @@ export class Viewfinder {
   constructor(canvas) {
     this.canvas = canvas; this.active = true; this.disposed = false;
     /** @type {HTMLVideoElement|HTMLCanvasElement|null} */ this.source = null;
+    /** @type {HTMLVideoElement|HTMLCanvasElement|null} */ this.uploaded = null;
     canvas.width = 240; canvas.height = 360;
     this.gl = canvas.getContext('webgl', {alpha:false,antialias:false,powerPreference:'low-power',preserveDrawingBuffer:false});
     this.fallback = this.gl ? null : canvas.getContext('2d');
@@ -80,7 +81,9 @@ export class Viewfinder {
     const gl=this.gl;
     if(gl&&!gl.isContextLost()) {
       try {
-        gl.bindTexture(gl.TEXTURE_2D,this.texture ?? null);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,source);
+        gl.bindTexture(gl.TEXTURE_2D,this.texture ?? null);
+        // A still image is uploaded once; only camera frames change.
+        if(video||this.uploaded!==source){gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,source);this.uploaded=source;}
         const ratio=width/height/(this.canvas.width/this.canvas.height);
         gl.uniform2f(this.crop ?? null,Math.min(1,1/ratio),Math.min(1,ratio));gl.uniform1f(this.time ?? null,time/1000);
         gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
@@ -98,7 +101,7 @@ export class Viewfinder {
     }
   }
   clear() {
-    this.source=null;
+    this.source=null;this.uploaded=null;
     if(this.gl&&!this.gl.isContextLost()) {this.gl.clearColor(0,0,0,1);this.gl.clear(this.gl.COLOR_BUFFER_BIT);}
     else if(this.fallback) {this.fallback.fillStyle='#000';this.fallback.fillRect(0,0,this.canvas.width,this.canvas.height);}
   }

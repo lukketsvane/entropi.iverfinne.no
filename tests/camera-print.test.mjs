@@ -93,7 +93,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   vm.runInNewContext(compiled, { exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
     $state: value => value, navigator: { mediaDevices: { getUserMedia: async () => { cameraRequests++; return stream; } }, ...(share ? { share: async data => { shared.push(data); }, canShare: share } : {}) }, document, window, File,
     createImageBitmap: async file => { if ((await file.text()).startsWith('broken')) throw new Error('unsupported'); return { width: 8, height: 6, close(){} }; },
-    Image: class { decode(){ return Promise.reject(new Error('undecodable')); } },
+    Image: class { set src(_){ queueMicrotask(() => this.onerror?.()); } decode(){ return Promise.reject(new Error('undecodable')); } },
     setTimeout, clearTimeout, requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout,
     performance: {now: () => pointerTime}, console: {...console, warn(){}}, URL, Blob, crypto, ArrayBuffer, Uint8Array, Uint8ClampedArray, Float32Array, DOMException, AbortController,
     ImageData: class { constructor(data, width, height){ Object.assign(this, { data, width, height }); } },

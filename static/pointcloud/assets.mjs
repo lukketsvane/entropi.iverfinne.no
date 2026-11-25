@@ -2,7 +2,8 @@ const sha256 = async bytes => Array.from(new Uint8Array(await crypto.subtle.dige
 
 // Only public model/runtime files are fetched or cached. No camera data goes onto the network.
 export async function loadAsset(asset, onProgress = () => {}, fetcher = fetch, cache = null) {
-  let response = await cache?.match(asset.url);
+  let response = await cache?.match(asset.url).catch(() => null);
+  const cached = !!response;
   if (!response) response = await fetcher(asset.url, { cache: 'force-cache' });
   if (!response?.ok) throw new Error('Kunne ikkje laste 3D-modellen. Prøv igjen når du har nett.');
   const bytes = new Uint8Array(asset.bytes);
@@ -27,7 +28,7 @@ export async function loadAsset(asset, onProgress = () => {}, fetcher = fetch, c
     await cache?.delete(asset.url);
     throw new Error('3D-modellen kunne ikkje kontrollerast. Prøv igjen.');
   }
-  try { await cache?.put(asset.url, new Response(bytes)); } catch { /* Limited storage must not prevent inference. */ }
+  if (!cached) try { await cache?.put(asset.url, new Response(bytes)); } catch { /* Limited storage must not prevent inference. */ }
   onProgress(100);
   return bytes;
 }

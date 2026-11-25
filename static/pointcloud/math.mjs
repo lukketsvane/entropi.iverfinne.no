@@ -1,10 +1,12 @@
 // Camera colours and AI inverse depth are separate inputs. No brightness-to-depth fallback.
 /** @param {number} width @param {number} height */
 /** Shrink to fit max, in multiples of 32; never enlarge. @param {number} width @param {number} height @param {number} max */
-export function fitSize(width, height, max) {
-  if (Math.max(width, height) <= max) return { width, height };
-  const scale = max / Math.max(width, height);
-  return { width: Math.max(32, Math.round(width * scale / 32) * 32), height: Math.max(32, Math.round(height * scale / 32) * 32) };
+export function fitSize(width, height, max, area = Infinity) {
+  const scale = Math.min(max / Math.max(width, height), Math.sqrt(area / (width * height)));
+  if (scale >= 1) return { width, height };
+  const side = (/** @type {number} */ value, /** @type {(n: number) => number} */ round) => Math.max(32, round(value * scale / 32) * 32);
+  const size = { width: side(width, Math.round), height: side(height, Math.round) };
+  return size.width * size.height <= area ? size : { width: side(width, Math.floor), height: side(height, Math.floor) };
 }
 
 /** @param {number} width @param {number} height */

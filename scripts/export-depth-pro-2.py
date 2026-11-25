@@ -28,7 +28,19 @@ def rope_embed(rope, shape=None, dtype=None):
     return torch.cat([sin, cos], dim=-1)
 
 
+def per_head_attention():
+    """Attend one head at a time, so no buffer holds all heads' token-by-token scores (phones run out of GPU memory)."""
+    whole = torch.nn.functional.scaled_dot_product_attention
+
+    def attention(q, k, v, *args, **kwargs):
+        heads = [whole(q[:, h : h + 1], k[:, h : h + 1], v[:, h : h + 1], *args, **kwargs) for h in range(q.shape[1])]
+        return torch.cat(heads, dim=1)
+
+    torch.nn.functional.scaled_dot_product_attention = attention
+
+
 def main(preset, fp32_path, output_path):
+    per_head_attention()
     model, _ = create_model_and_transforms(preset, device="cpu", precision=torch.float32)
     model.fov = None
     rope = model.encoder.rope
