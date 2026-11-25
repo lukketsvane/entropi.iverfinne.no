@@ -1,57 +1,118 @@
-import { env, InferenceSession, Tensor } from './vendor/ort.wasm.min.mjs';
-import { normalizedImage } from './math.mjs';
+import { normalizedImage, fitSize } from './math.mjs';
 import { loadAsset } from './assets.mjs';
+import { resizePixels } from './tiles.mjs';
 
-env.wasm.numThreads = 1; // Safari: no SharedArrayBuffer or cross-origin isolation required.
-env.wasm.proxy = false; // This module already runs in a worker.
-env.wasm.wasmPaths = new URL('./vendor/', import.meta.url).href;
-env.logLevel = 'error';
-let sessionPromise = null;
+const CACHE = 'entropi-depth-v2';
+let enginePromise = null;
 let running = false;
 
 const progress = (id, phase, percent) => self.postMessage({ id, type: 'progress', phase, percent });
-async function modelBytes(id) {
-  const response = await fetch(new URL('./models/manifest.json', import.meta.url), { cache: 'force-cache' });
+
+async function readManifest() {
+  const response = await fetch(new URL('./models/manifest.json', import.meta.url), { cache: 'no-cache' });
   if (!response.ok) throw new Error('Kunne ikkje hente djupnemodellen.');
-  const manifest = await response.json();
-  let cache = null;
-  try { cache = await caches.open('entropi-depth-v1-' + manifest.asset.sha256.slice(0, 12)); } catch { }
-  const model = await loadAsset(manifest.asset, percent => progress(id, 'loading-model', percent), fetch, cache);
-  env.wasm.wasmBinary = await loadAsset(manifest.runtime, percent => progress(id, 'loading-runtime', percent), fetch, cache);
-  return model;
+  return response.json();
 }
 
-function getSession(id) {
-  if (!sessionPromise) sessionPromise = (async () => {
-    const bytes = await modelBytes(id);
-    progress(id, 'starting');
-    return InferenceSession.create(bytes, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
-  })().catch(error => { sessionPromise = null; throw error; });
-  return sessionPromise;
+async function openCache() {
+  try {
+    for (const name of await caches.keys()) if (name.startsWith('entropi-depth-') && name !== CACHE) await caches.delete(name);
+    return await caches.open(CACHE);
+  } catch { return null; }
+}
+
+/** Load files in order with one combined progress value. */
+async function loadAll(assets, id, phase, cache) {
+  const total = assets.reduce((sum, asset) => sum + asset.bytes, 0);
+  const files = [];
+  let done = 0;
+  for (const asset of assets) {
+    files.push(await loadAsset(asset, percent => progress(id, phase, Math.round((done + asset.bytes * percent / 100) / total * 100)), fetch, cache));
+    done += asset.bytes;
+  }
+  return files;
+}
+
+function configure(ort) {
+  ort.env.wasm.numThreads = 1; // Safari: no SharedArrayBuffer or cross-origin isolation required.
+  ort.env.wasm.proxy = false; // This module already runs in a worker.
+  ort.env.wasm.wasmPaths = new URL('./vendor/', import.meta.url).href;
+  ort.env.logLevel = 'error';
+}
+
+// The larger model at higher resolution, where the browser offers WebGPU.
+async function gpuEngine(manifest, id, cache) {
+  const spec = manifest.webgpu;
+  if (!spec || !(await self.navigator?.gpu?.requestAdapter?.().catch(() => null))) return null;
+  const ort = await import('./vendor/ort.webgpu.min.mjs');
+  configure(ort);
+  const [runtime, graph, ...parts] = await loadAll([spec.runtime, spec.graph, ...spec.data], id, 'loading-model', cache);
+  ort.env.wasm.wasmBinary = runtime;
+  progress(id, 'starting');
+  const session = await ort.InferenceSession.create(graph, { executionProviders: ['webgpu'], graphOptimizationLevel: 'all',
+    externalData: spec.data.map((part, index) => ({ path: part.name, data: parts[index] })) });
+  return { ort, session, max: spec.max, model: spec.model, gpu: true };
+}
+
+async function cpuEngine(manifest, id, cache) {
+  const ort = await import('./vendor/ort.wasm.min.mjs');
+  configure(ort);
+  const [runtime, model] = await loadAll([manifest.runtime, manifest.asset], id, 'loading-model', cache);
+  ort.env.wasm.wasmBinary = runtime;
+  progress(id, 'starting');
+  const session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+  return { ort, session, max: manifest.max, model: manifest.model, gpu: false };
+}
+
+function engine(id, cpuOnly = false) {
+  if (!enginePromise) enginePromise = (async () => {
+    const [manifest, cache] = await Promise.all([readManifest(), openCache()]);
+    if (!cpuOnly) {
+      try { const gpu = await gpuEngine(manifest, id, cache); if (gpu) return gpu; } catch { /* Fall back to the CPU model. */ }
+    }
+    return cpuEngine(manifest, id, cache);
+  })().catch(error => { enginePromise = null; throw error; });
+  return enginePromise;
+}
+
+async function infer(current, rgba, width, height) {
+  const size = fitSize(width, height, current.max);
+  const input = size.width === width && size.height === height ? rgba : resizePixels({ data: rgba, width, height }, size.width, size.height).data;
+  const tensor = new current.ort.Tensor('float32', normalizedImage(input, size.width, size.height), [1, 3, size.height, size.width]);
+  let outputs;
+  try {
+    outputs = await current.session.run({ [current.session.inputNames[0]]: tensor });
+    const output = outputs[current.session.outputNames[0]], dims = output.dims;
+    const depth = new Float32Array(await output.getData());
+    if (depth.length !== dims.at(-1) * dims.at(-2)) throw new Error('Uventa djupnekart.');
+    return { depth, width: dims.at(-1), height: dims.at(-2) };
+  } finally {
+    tensor.dispose();
+    for (const output of Object.values(outputs || {})) output.dispose();
+  }
 }
 
 self.onmessage = async event => {
   const { id, width, height, rgba } = event.data;
   if (running) { self.postMessage({ id, type: 'error', message: 'Djupneberekninga er oppteken.' }); return; }
   running = true;
-  let input, outputs;
   try {
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 32 || height < 32 || width > 768 || height > 768 || width % 32 || height % 32) throw new Error('Ugyldig storleik for djupnemodellen.');
-    const pixels = normalizedImage(new Uint8ClampedArray(rgba), width, height);
-    const session = await getSession(id);
-    input = new Tensor('float32', pixels, [1, 3, height, width]);
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 32 || height < 32 || width > 1536 || height > 1536 || width % 32 || height % 32) throw new Error('Ugyldig storleik for djupnemodellen.');
+    const pixels = new Uint8ClampedArray(rgba);
+    let current = await engine(id), result;
     progress(id, 'estimating');
-    outputs = await session.run({ [session.inputNames[0]]: input });
-    const output = outputs[session.outputNames[0]], dims = output.dims;
-    const depthWidth = dims.at(-1), depthHeight = dims.at(-2);
-    const depth = new Float32Array(output.data);
-    if (depth.length !== depthWidth * depthHeight) throw new Error('Uventa djupnekart.');
-    self.postMessage({ id, type: 'result', depth: depth.buffer, width: depthWidth, height: depthHeight }, [depth.buffer]);
+    try { result = await infer(current, pixels, width, height); }
+    catch (error) {
+      if (!current.gpu) throw error;
+      // A GPU without enough memory still gets an image from the smaller CPU model.
+      await current.session.release?.().catch(() => {});
+      enginePromise = null; current = await engine(id, true);
+      result = await infer(current, pixels, width, height);
+    }
+    self.postMessage({ id, type: 'result', depth: result.depth.buffer, width: result.width, height: result.height, model: current.model }, [result.depth.buffer]);
   } catch (error) {
     self.postMessage({ id, type: 'error', message: error?.message || 'Kunne ikkje berekne djupna.' });
   } finally {
-    input?.dispose();
-    for (const output of Object.values(outputs || {})) output.dispose();
     running = false;
   }
 };

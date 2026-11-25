@@ -15,7 +15,7 @@ test('portrait, landscape and square captures keep their aspect and fit the mobi
   for (const [width,height] of [[630,840],[840,630],[840,840],[840,200]]) {
     const size = inferenceSize(width,height);
     assert.equal(size.width%32,0); assert.equal(size.height%32,0);
-    assert.equal(Math.max(size.width,size.height),768);
+    assert.equal(Math.max(size.width,size.height),1024);
     if (width !== height) assert.equal(size.width>size.height,width>height);
     const stride = pointStride(width,height);
     assert.ok(Math.ceil(width/stride)*Math.ceil(height/stride)<=42000);
@@ -125,4 +125,19 @@ test('failed and cancelled inference rejects and can start a fresh worker', asyn
   const cancelled=assert.rejects(second,err=>err.name==='AbortError');
   estimator.dispose();await cancelled;
   assert.equal(workers.length,2);assert.equal(workers[1].terminated,true);
+});
+
+test('model input shrinks to the engine limit in multiples of 32 and is never enlarged', async () => {
+  const { fitSize } = await import('../static/pointcloud/math.mjs');
+  assert.deepEqual(fitSize(1024, 768, 768), { width: 768, height: 576 });
+  assert.deepEqual(fitSize(768, 1024, 768), { width: 576, height: 768 });
+  assert.deepEqual(fitSize(512, 384, 768), { width: 512, height: 384 });
+});
+
+test('downscaled model input averages the pixels it covers instead of skipping them', async () => {
+  const { resizePixels } = await import('../static/pointcloud/tiles.mjs');
+  const data = new Uint8ClampedArray(4 * 2 * 4);
+  for (let i = 0; i < 8; i++) data.set(i % 2 ? [255, 255, 255, 255] : [0, 0, 0, 255], i * 4);
+  const half = resizePixels({ data, width: 4, height: 2 }, 2, 1);
+  assert.deepEqual(Array.from(half.data), [128, 128, 128, 255, 128, 128, 128, 255]);
 });

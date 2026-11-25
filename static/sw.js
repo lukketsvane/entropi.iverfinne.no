@@ -2,7 +2,7 @@
  * Verifiserte modellar har sin eigen cache; ikkje slett han når appskallet blir oppdatert.
  * HTML: nett først (ny deploy syner med ein gong), cache som reserve.
  * Alt anna frå same opphav: cache først, oppdater i bakgrunnen. */
-const V = 'entropi-v13-depth-lithography';
+const V = 'entropi-v14-depth-pro-2-b';
 
 self.addEventListener('install', (e) => {
 	e.waitUntil(
@@ -30,7 +30,8 @@ self.addEventListener('fetch', (e) => {
 	if (req.method !== 'GET') return;
 	const url = new URL(req.url);
 	if (url.origin !== location.origin) return;
-	if (url.pathname === '/sw.js' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/triposplat') || url.pathname === '/gauss' || url.pathname.startsWith('/gauss/') || url.pathname === '/gauss.webmanifest' || url.pathname === '/gauss-icon.png') return;
+	// Depth models are verified and cached by the depth worker; storing them here too doubles 150 MB.
+	if (url.pathname === '/sw.js' || url.pathname.startsWith('/pointcloud/models/') || url.pathname.startsWith('/api/') || url.pathname.startsWith('/triposplat') || url.pathname === '/gauss' || url.pathname.startsWith('/gauss/') || url.pathname === '/gauss.webmanifest' || url.pathname === '/gauss-icon.png') return;
 
 	if (req.mode === 'navigate') {
 		e.respondWith(

@@ -38,3 +38,11 @@ test('rendering resamples depth to the photograph as opaque greyscale', () => {
   for (let i = 0; i < image.length; i += 4) assert.ok(image[i] === image[i + 1] && image[i] === image[i + 2] && image[i + 3] === 255);
   assert.throws(() => prepareToneDepth(new Float32Array(3), 2, 2), /Ugyldig/);
 });
+
+test('contrast steepens tones around mid-grey and gamma moves the midtones', () => {
+  const plain = row({ preset: 1 }), steep = row({ preset: 1, contrast: 2 }), light = row({ preset: 1, gamma: .5 }), dark = row({ preset: 1, gamma: 2 });
+  const middle = plain.findIndex(value => value > 100);
+  assert.ok(steep[middle + 4] - steep[middle - 4] > plain[middle + 4] - plain[middle - 4]);
+  assert.ok(light[middle] > plain[middle] && dark[middle] < plain[middle]);
+  assert.deepEqual(row({ preset: 1, contrast: 1, gamma: 1 }), plain);
+});

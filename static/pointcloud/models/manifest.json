@@ -6,16 +6,56 @@
     "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-s-bgcc6f8bg3.pt",
     "sha256": "23ce46c7b39678e2e9d6983fbcfa2366e0f691ffedc300f6cb3efa082f2fc590"
   },
+  "max": 768,
   "asset": {
-    "url": "/pointcloud/models/depthpro2-s-w8.onnx",
-    "bytes": 36861506,
-    "sha256": "a25d58bfaf96e6ab2f01953b49d4fc37b9224c5f2d4c9b81e99ed8839b13ca03"
+    "url": "/pointcloud/models/depthpro2-s.d2130d29.onnx",
+    "bytes": 36861478,
+    "sha256": "d2130d294aa7f8714e5debca25790ec09bbd04e3feed83692e6f68c10b4bc75b"
   },
   "runtime": {
     "version": "1.30.0",
     "url": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort-wasm-simd-threaded.wasm",
     "bytes": 14239897,
     "sha256": "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2"
+  },
+  "webgpu": {
+    "model": "Depth Pro 2 B",
+    "max": 1024,
+    "checkpoint": {
+      "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-b-xb7m9egktw.pt",
+      "sha256": "172a7bf6c3e2078a31b56f47148f861e25961f5bb0247b999fd7bad9f1036aae"
+    },
+    "graph": {
+      "url": "/pointcloud/models/depthpro2-b.ca685d8e.onnx",
+      "bytes": 1005347,
+      "sha256": "ca685d8eff44442e1aa2a21ff417dc4332ee1fd7d4f47389c3e1f372f6f1019a"
+    },
+    "data": [
+      {
+        "name": "depthpro2-b.data0",
+        "url": "/pointcloud/models/depthpro2-b.e77716ea.data0",
+        "bytes": 47437824,
+        "sha256": "e77716ea6e7de20462e995e428abd214a0b8980e4a60419ff8b29e71c28c97ad"
+      },
+      {
+        "name": "depthpro2-b.data1",
+        "url": "/pointcloud/models/depthpro2-b.bece1701.data1",
+        "bytes": 45748224,
+        "sha256": "bece170195f4bc450b87892ef81f8cbd7d646a14ab07d28aac5d456596f1d309"
+      },
+      {
+        "name": "depthpro2-b.data2",
+        "url": "/pointcloud/models/depthpro2-b.824c6af6.data2",
+        "bytes": 20054016,
+        "sha256": "824c6af68be1fa39abc37486cf1d8c67ae00c259bf1f724eef904022530f7613"
+      }
+    ],
+    "runtime": {
+      "version": "1.30.0",
+      "url": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort-wasm-simd-threaded.asyncify.wasm",
+      "bytes": 26781914,
+      "sha256": "39f9f0894d478800487ed9f7dbe92618498db320cf55c8e3d89adff8dce658da"
+    }
   },
   "depth": "Focal-normalized inverse depth, used as relative depth; visible surfaces only."
 }

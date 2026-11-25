@@ -1,4 +1,4 @@
-/** @typedef {{depth: Float32Array, width: number, height: number}} DepthPrediction */
+/** @typedef {{depth: Float32Array, width: number, height: number, model?: string}} DepthPrediction */
 /** @typedef {{phase: string, percent?: number}} Progress */
 
 export class DepthEstimator {
@@ -26,7 +26,7 @@ export class DepthEstimator {
         const pending = this.pending, data = event.data;
         if (!pending || pending.id !== data.id) return;
         if (data.type === 'progress') pending.onProgress(data);
-        else if (data.type === 'result') this.finish(null, { depth: new Float32Array(data.depth), width: data.width, height: data.height });
+        else if (data.type === 'result') this.finish(null, { depth: new Float32Array(data.depth), width: data.width, height: data.height, model: data.model });
         else if (data.type === 'error') { this.finish(new Error(data.message)); this.stopWorker(); }
       };
       this.worker.onerror = () => { this.finish(new Error('Djupneberekninga stoppa. Trykk Prøv igjen.')); this.stopWorker(); };

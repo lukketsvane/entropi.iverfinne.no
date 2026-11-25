@@ -43,3 +43,16 @@ test('a deleted image leaves both the grid index and its depth', async () => {
   assert.deepEqual((await gallery.list()).map(entry => entry.id), [kept]);
   assert.equal(await gallery.get(removed), undefined); assert.ok(await gallery.get(kept));
 });
+
+test('picked files wait in a persistent queue until each is developed into the gallery', async () => {
+  const database = memoryIndexedDB(), gallery = createGallery(database);
+  await gallery.enqueue([new File(['a'], 'a.jpg'), new File(['b'], 'b.jpg')]);
+  const reopened = createGallery(database), [first, second] = await reopened.pending();
+  assert.deepEqual([first.name, second.name, first.attempts], ['a.jpg', 'b.jpg', 0]);
+  assert.equal(await first.file.text(), 'a');
+  const id = await reopened.complete(first.id, item(2), new Blob(['done']));
+  assert.deepEqual((await reopened.pending()).map(job => job.name), ['b.jpg']);
+  assert.deepEqual((await reopened.list()).map(entry => entry.id), [id]);
+  await reopened.retry(second); assert.equal((await reopened.pending())[0].attempts, 1);
+  await reopened.drop(second.id); assert.equal((await reopened.pending()).length, 0);
+});

@@ -68,7 +68,7 @@ test('wide photo depth retains multiple model views and cancels before subsequen
   const pixels=view(0,0,240,80);let calls=0,current=true;
   const estimator={async estimate(_rgba,width,height){calls++;return {depth:new Float32Array(width*height).fill(4),width,height};}};
   const result=await estimateImageDepth(pixels,estimator,()=>{});
-  assert.ok(calls>1);assert.equal(result.width/result.height,3);assert.ok(result.depth.every(n=>Math.abs(n-4)<1e-5));
+  assert.ok(calls>1);assert.ok(Math.abs(result.width/result.height-3)<.01);assert.ok(result.depth.every(n=>Math.abs(n-4)<1e-5));
   calls=0;await assert.rejects(estimateImageDepth(pixels,estimator,()=>{current=false;},()=>current),{name:'AbortError'});
   assert.equal(calls,1);
 });

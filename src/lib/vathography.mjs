@@ -57,9 +57,12 @@ const toneLuts=curves.map(knots=>{const evaluate=pchip(knots);return Float32Arra
  * @param {ArrayLike<number>} depth @param {number} width @param {number} height */
 export function prepareToneDepth(depth,width,height){
   if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||depth?.length!==width*height)throw new Error('Ugyldig djupnekart.');
-  return ({preset=0,position=0,width:bandWidth=1,outputWidth=width,outputHeight=height}={})=>{
+  return ({preset=0,position=0,width:bandWidth=1,contrast=1,gamma=1,outputWidth=width,outputHeight=height}={})=>{
     if(!Number.isInteger(outputWidth)||!Number.isInteger(outputHeight)||outputWidth<1||outputHeight<1||outputWidth*outputHeight>16777216)throw new Error('Ugyldig biletstorleik.');
-    const lut=toneLuts[Number.isInteger(preset)&&preset>=0&&preset<toneLuts.length?preset:0];
+    const curve=toneLuts[Number.isInteger(preset)&&preset>=0&&preset<toneLuts.length?preset:0];
+    const steep=Number.isFinite(contrast)?clamp(contrast,.25,4):1,power=Number.isFinite(gamma)?clamp(gamma,.25,4):1;
+    // Midtones (gamma) then contrast around mid-grey, folded into the 4097-step table.
+    const lut=steep===1&&power===1?curve:curve.map(value=>clamp(((value/255)**power-.5)*steep+.5,0,1)*255);
     const shift=Number.isFinite(position)?clamp(position,-1,1):0,stretch=Number.isFinite(bandWidth)?clamp(bandWidth,.25,3):1;
     const output=new Uint8ClampedArray(outputWidth*outputHeight*4);
     const valueAt=(/** @type {number} */ index)=>Number.isFinite(depth[index])?depth[index]:.5;

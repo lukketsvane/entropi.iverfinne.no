@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Worker } from 'node:worker_threads';
-import { imageToPointCloud, pointCloudPLY, inferenceSize, pointStride } from '../static/pointcloud/math.mjs';
+import { imageToPointCloud, pointCloudPLY, inferenceSize, pointStride, fitSize } from '../static/pointcloud/math.mjs';
 import {stitchPanorama} from '../static/pointcloud/panorama.mjs';
 import {estimateImageDepth} from '../static/pointcloud/tiles.mjs';
 
@@ -37,19 +37,20 @@ try {
     const size = inferenceSize(width,height);
     const input = photo(size.width,size.height);
     const result = await request({rgba:input.buffer,width:size.width,height:size.height});
-    assert.deepEqual([result.width,result.height],[size.width,size.height]);
+    const expected = fitSize(size.width,size.height,manifest.max);
+    assert.deepEqual([result.width,result.height],[expected.width,expected.height]); assert.equal(result.model,manifest.model);
     const depth = new Float32Array(result.depth);
     assert.ok(depth.every(Number.isFinite));
     let min=Infinity,max=-Infinity;
     for (const value of depth) {min=Math.min(min,value);max=Math.max(max,value);}
     assert.ok(max-min>.01,'Inference must give non-flat relative depth');
     const rgba=photo(width,height);
-    const cloud=imageToPointCloud({rgba,width,height,depth,depthWidth:size.width,depthHeight:size.height,stride:pointStride(width,height)});
+    const cloud=imageToPointCloud({rgba,width,height,depth,depthWidth:result.width,depthHeight:result.height,stride:pointStride(width,height)});
     assert.ok(cloud.count<=42000);
     assert.ok(cloud.positions.every(Number.isFinite));
     const ply=pointCloudPLY(cloud);
     assert.ok(new TextDecoder().decode(ply.slice(0,260)).includes('relative units'));
-    results.push({capture:[width,height],inference:[size.width,size.height],depthRange:[min,max],points:cloud.count,plyBytes:ply.length});
+    results.push({capture:[width,height],sent:[size.width,size.height],inference:[result.width,result.height],depthRange:[min,max],points:cloud.count,plyBytes:ply.length});
   }
   const frames=Array.from({length:4},(_,frame)=>{
     const width=320,height=240,data=new Uint8ClampedArray(width*height*4);

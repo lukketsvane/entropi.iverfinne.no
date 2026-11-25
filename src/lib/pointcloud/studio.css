@@ -53,10 +53,10 @@
 .studio .gallery-grid button {position:relative;display:block;width:100%;aspect-ratio:1;min-width:0;padding:0;border:0;background:#111;overflow:hidden;touch-action:pan-y}
 .studio .gallery-grid img {position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;-webkit-user-drag:none}
 .studio .gallery-grid button {-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-.studio .sheet {position:absolute;inset:0;z-index:11;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;background:#000d;padding:24px}
-.studio .sheet img {width:min(60vw,240px);aspect-ratio:1;object-fit:cover;pointer-events:none}
-.studio .sheet-actions {display:flex;gap:28px}
-.studio .sheet-actions button {width:48px;height:48px;display:grid;place-items:center;padding:0;border:0;background:transparent;color:#fff;opacity:.75}
-.studio .sheet-actions button:disabled {opacity:.25}
-.studio .sheet-actions button.armed {color:#ff5a4f;opacity:1}
-.studio .sheet-actions svg {width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.studio .menu-catcher {position:absolute;inset:0;z-index:11;background:transparent}
+.studio .quick-menu {position:absolute;z-index:12;transform:translateX(-50%);display:flex;gap:4px;padding:4px;border-radius:26px;background:#1c1c1e;box-shadow:0 6px 24px #000c}
+.studio .quick-menu button {width:44px;height:44px;display:grid;place-items:center;padding:0;border:0;border-radius:22px;background:transparent;color:#fff;opacity:.85}
+.studio .quick-menu button:disabled {opacity:.25}
+.studio .quick-menu button.armed {color:#ff5a4f;opacity:1}
+.studio .quick-menu svg {width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.studio .gallery-grid button.held {outline:2px solid #fff;outline-offset:-2px}

@@ -15,8 +15,8 @@ import { memoryIndexedDB } from './helpers/indexeddb.mjs';
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
 export const harness = {
-  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys, uploadToGallery, tileDown, tileMove, cancelPress, tileClick, saveSheet, shareSheet, deleteSheet,
-  get sheet(){ return sheet; },
+  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys, uploadToGallery, tileDown, tileMove, cancelPress, tileClick, saveMenu, shareMenu, deleteMenu,
+  get menu(){ return menu; }, get contrast(){ return contrast; }, get gamma(){ return gamma; },
   get uploading(){ return uploading; },
   get galleryOpen(){ return galleryOpen; }, get galleryItems(){ return galleryItems; }, get currentId(){ return currentId; },
   get mode(){ return mode; }, get printer(){ return printer; }, get announcement(){ return announcement; },
@@ -52,7 +52,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
       fillRect(){}, drawImage(){}, putImageData(){}, getImageData: () => ({ width: 4, height: 4, data: new Uint8ClampedArray(64).fill(changingFrames ? 100 + (++samples) * 10 : 180) })
     }) })
   });
-  const window = new EventTarget();
+  const window = Object.assign(new EventTarget(), { innerWidth: 390, innerHeight: 844 });
   if (storage) window.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
   if (motionPermission !== 'unsupported') window.DeviceMotionEvent = motionPermission === 'direct' ? {} : {
     requestPermission: () => { motionRequests++; return Promise.resolve(motionPermission); }
@@ -88,7 +88,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   const exports = {};
   vm.runInNewContext(compiled, { exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
     $state: value => value, navigator: { mediaDevices: { getUserMedia: async () => { cameraRequests++; return stream; } }, ...(share ? { share: async data => { shared.push(data); }, canShare: share } : {}) }, document, window, File,
-    createImageBitmap: async file => { if (file.name === 'broken.heic') throw new Error('unsupported'); return { width: 8, height: 6, close(){} }; },
+    createImageBitmap: async file => { if ((await file.text()).startsWith('broken')) throw new Error('unsupported'); return { width: 8, height: 6, close(){} }; },
     Image: class { decode(){ return Promise.reject(new Error('undecodable')); } },
     setTimeout, clearTimeout, requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout,
     performance: {now: () => pointerTime}, console: {...console, warn(){}}, URL, Blob, crypto, ArrayBuffer, Uint8Array, Uint8ClampedArray, Float32Array, DOMException, AbortController,
@@ -326,13 +326,12 @@ test('without local storage the camera still develops and prints, and the galler
   camera.harness.closeGallery(); assert.equal(camera.harness.mode, 'done');
 });
 
-const files = (...names) => ({ currentTarget: { files: names.map(name => new File(['x'], name, { type: 'image/jpeg' })), value: 'x' } });
+const files = (...names) => ({ currentTarget: { files: names.map(name => new File([name], name, { type: 'image/jpeg' })), value: 'x' } });
 
 test('several photos uploaded in the gallery each become their own depth image in the grid', async t => {
   const camera = fixture(false); t.after(camera.cleanup);
   await camera.harness.openGallery();
   camera.harness.uploadToGallery(files('a.jpg', 'b.jpg', 'c.jpg'));
-  assert.equal(camera.harness.uploading, 3);
   await waitFor(() => camera.harness.uploading === 0 && camera.harness.galleryItems.length === 3);
   assert.equal(camera.estimates(), 3); assert.equal(camera.stitchedFrames(), 0);
   assert.equal(camera.harness.mode, 'camera'); assert.equal(camera.paints.length, 0);
@@ -349,19 +348,29 @@ test('an unreadable upload is skipped and reported while the rest are kept', asy
   assert.match(camera.harness.announcement, /2 opplasta bilete.*1 kunne ikkje lesast/);
 });
 
-test('closing the gallery stops the remaining uploads without saving a late result', async t => {
+test('uploads keep developing after the gallery closes and a photo is taken, and a photo goes first', async t => {
   let resolve;
   const depthGate = new Promise(done => { resolve = done; });
   const database = memoryIndexedDB();
   const camera = fixture(false, { depthGate, database }); t.after(camera.cleanup);
   await camera.harness.openGallery();
-  camera.harness.uploadToGallery(files('a.jpg', 'b.jpg'));
-  await new Promise(done => setTimeout(done, 10));
-  camera.harness.closeGallery(); assert.equal(camera.harness.uploading, 0);
-  resolve(); await new Promise(done => setTimeout(done, 20));
-  assert.ok(camera.estimates() <= 1);
-  await camera.harness.openGallery(); await new Promise(done => setTimeout(done, 10));
-  assert.equal(camera.harness.galleryItems.length, 0);
+  camera.harness.uploadToGallery(files('a.jpg', 'b.jpg', 'c.jpg'));
+  await waitFor(() => camera.harness.uploading === 3);
+  camera.harness.closeGallery(); assert.equal(camera.harness.galleryOpen, false);
+  await waitFor(() => camera.previewSource() === camera.video);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'working');
+  camera.shake?.(); resolve();
+  await waitFor(() => camera.harness.mode === 'done' && camera.harness.uploading === 0 && camera.estimates() === 4);
+  await camera.harness.openGallery(); await waitFor(() => camera.harness.galleryItems.length === 4);
+});
+
+test('a reload resumes uploads that were still waiting', async t => {
+  const database = memoryIndexedDB();
+  const { createGallery: open } = await import('../src/lib/gallery.mjs');
+  await open(database).enqueue([new File(['x'], 'left.jpg'), new File(['x'], 'behind.jpg')]);
+  const camera = fixture(false, { database }); t.after(camera.cleanup);
+  await waitFor(() => camera.estimates() === 2 && camera.harness.uploading === 0);
+  await camera.harness.openGallery(); await waitFor(() => camera.harness.galleryItems.length === 2);
 });
 
 async function galleryWithImage(options) {
@@ -371,23 +380,26 @@ async function galleryWithImage(options) {
   return camera;
 }
 const tile = (camera, index = 0) => camera.harness.galleryItems[index];
+const tileBox = { getBoundingClientRect: () => ({ left: 4, top: 60, right: 94, bottom: 150, width: 90, height: 90 }) };
 const longPress = async (camera, item = tile(camera)) => {
-  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 7, clientX: 50, clientY: 50 }, item);
-  await waitFor(() => camera.harness.sheet?.file);
+  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 7, clientX: 50, clientY: 50, currentTarget: tileBox }, item);
+  await waitFor(() => camera.harness.menu?.file);
 };
 
 test('holding a gallery tile prepares the full image and shares it without opening the tile', async t => {
   const camera = await galleryWithImage({ share: () => true }); t.after(camera.cleanup);
   const item = tile(camera);
   await longPress(camera, item);
-  assert.equal(camera.harness.sheet.id, item.id); assert.equal(camera.harness.sheet.file.type, 'image/png');
+  assert.equal(camera.harness.menu.id, item.id); assert.equal(camera.harness.menu.file.type, 'image/png');
+  assert.equal(camera.harness.galleryOpen, true, 'The menu sits in the grid instead of opening a viewer');
+  assert.ok(camera.harness.menu.x >= 84 && camera.harness.menu.y === 158, 'The menu is placed beside the held tile');
   camera.harness.tileClick(item.id); assert.equal(camera.harness.galleryOpen, true, 'The click after a hold does not open the tile');
-  camera.harness.shareSheet();
+  camera.harness.shareMenu();
   assert.equal(camera.shared.length, 1); assert.equal(camera.shared[0].files[0].name, `entropi-djupn-${item.id}.png`);
-  assert.equal(camera.harness.sheet, null);
-  await longPress(camera, item); camera.harness.saveSheet();
+  assert.equal(camera.harness.menu, null);
+  await longPress(camera, item); camera.harness.saveMenu();
   assert.equal(camera.shared.length, 2, 'Saving to Photos on iOS goes through the share sheet'); assert.equal(camera.downloads.length, 0);
-  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 8, clientX: 50, clientY: 50 }, item);
+  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 8, clientX: 50, clientY: 50, currentTarget: tileBox }, item);
   camera.harness.cancelPress(); camera.harness.tileClick(item.id);
   await waitFor(() => !camera.harness.galleryOpen);
 });
@@ -395,8 +407,8 @@ test('holding a gallery tile prepares the full image and shares it without openi
 test('without file sharing, saving downloads the PNG', async t => {
   const camera = await galleryWithImage(); t.after(camera.cleanup);
   await longPress(camera);
-  camera.harness.shareSheet(); assert.ok(camera.harness.sheet, 'Share is unavailable and does nothing');
-  camera.harness.saveSheet();
+  camera.harness.shareMenu(); assert.ok(camera.harness.menu, 'Share is unavailable and does nothing');
+  camera.harness.saveMenu();
   assert.equal(camera.downloads.length, 1); assert.match(camera.downloads[0].download, /^entropi-djupn-.*\.png$/);
 });
 
@@ -404,10 +416,10 @@ test('deleting a tile needs a second tap and removes it from the grid and storag
   const database = memoryIndexedDB();
   const camera = await galleryWithImage({ database }); t.after(camera.cleanup);
   await longPress(camera);
-  await camera.harness.deleteSheet();
-  assert.equal(camera.harness.sheet.armed, true); assert.equal(camera.harness.galleryItems.length, 1);
-  await camera.harness.deleteSheet();
-  assert.equal(camera.harness.sheet, null); assert.equal(camera.harness.galleryItems.length, 0);
+  await camera.harness.deleteMenu();
+  assert.equal(camera.harness.menu.armed, true); assert.equal(camera.harness.galleryItems.length, 1);
+  await camera.harness.deleteMenu();
+  assert.equal(camera.harness.menu, null); assert.equal(camera.harness.galleryItems.length, 0);
   assert.match(camera.harness.announcement, /sletta/);
   const next = fixture(false, { database }); t.after(next.cleanup);
   await next.harness.openGallery(); assert.equal(next.harness.galleryItems.length, 0);
@@ -416,9 +428,62 @@ test('deleting a tile needs a second tap and removes it from the grid and storag
 test('scrolling the grid cancels a hold, and a short tap still opens the image', async t => {
   const camera = await galleryWithImage(); t.after(camera.cleanup);
   const item = tile(camera);
-  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 7, clientX: 50, clientY: 50 }, item);
+  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 7, clientX: 50, clientY: 50, currentTarget: tileBox }, item);
   camera.harness.tileMove({ pointerId: 7, clientX: 50, clientY: 80 });
   await new Promise(done => setTimeout(done, 600));
-  assert.equal(camera.harness.sheet, null);
+  assert.equal(camera.harness.menu, null);
   camera.harness.cancelPress(); camera.harness.tileClick(item.id); await waitFor(() => camera.harness.mode === 'done' && !camera.harness.galleryOpen);
+});
+
+async function developed(options) {
+  const camera = fixture(false, options);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  return camera;
+}
+// Real touch moves both fingers a few pixels per frame; replay a path the same way.
+const gesture = (camera, frames) => {
+  const { harness, point } = camera, [first] = frames, last = frames.at(-1);
+  harness.artDown(point(1, ...first[0])); harness.artDown(point(2, ...first[1]));
+  for (const [a, b] of frames.slice(1)) { harness.artMove(point(1, ...a)); harness.artMove(point(2, ...b)); }
+  harness.artUp(point(2, ...last[1])); harness.artUp(point(1, ...last[0]));
+};
+const slide = (from, to, steps = 12) => Array.from({ length: steps + 1 }, (_, i) => from.map((finger, f) => finger.map((value, axis) => value + (to[f][axis] - value) * i / steps)));
+const twist = (angle, steps = 12) => Array.from({ length: steps + 1 }, (_, i) => {
+  const a = angle * i / steps;
+  return [[200 - 50 * Math.cos(a), 300 - 50 * Math.sin(a)], [200 + 50 * Math.cos(a), 300 + 50 * Math.sin(a)]];
+});
+const twoFinger = (camera, from, to) => gesture(camera, slide(from, to));
+
+test('two fingers dragged sideways set contrast and dragged up or down set the midtones', async t => {
+  const camera = await developed(); t.after(camera.cleanup);
+  twoFinger(camera, [[100, 300], [200, 300]], [[160, 300], [260, 300]]);
+  assert.ok(camera.harness.contrast > 1.5); assert.equal(camera.harness.gamma, 1); assert.equal(camera.harness.bandWidth, 1);
+  twoFinger(camera, [[100, 300], [200, 300]], [[100, 220], [200, 220]]);
+  assert.ok(camera.harness.gamma < 1, 'Dragging up lightens the midtones'); assert.ok(camera.harness.contrast > 1.5);
+  await waitFor(() => camera.paints.length > 1);
+  assert.equal(camera.estimates(), 1); assert.equal(camera.writes.length, 0);
+});
+
+test('turning two fingers dials through the five expressions, and a two-finger double tap resets the tone', async t => {
+  const camera = await developed(); t.after(camera.cleanup);
+  assert.equal(camera.harness.preset, 1);
+  gesture(camera, twist(1.1));
+  assert.equal(camera.harness.preset, 3, 'About 63 degrees turns two steps');
+  gesture(camera, twist(-.6));
+  assert.equal(camera.harness.preset, 2);
+  twoFinger(camera, [[100, 300], [200, 300]], [[160, 300], [260, 300]]);
+  assert.ok(camera.harness.contrast > 1);
+  for (let tap = 0; tap < 2; tap++) { camera.advancePointer(100); twoFinger(camera, [[100, 300], [200, 300]], [[100, 300], [200, 300]]); }
+  assert.equal(camera.harness.contrast, 1); assert.equal(camera.harness.position, 0); assert.equal(camera.harness.preset, 2);
+});
+
+test('contrast and midtones are kept with the image in the gallery', async t => {
+  const camera = await developed(); t.after(camera.cleanup);
+  await waitFor(() => camera.harness.currentId);
+  twoFinger(camera, [[100, 300], [200, 300]], [[160, 300], [260, 300]]);
+  const kept = camera.harness.contrast;
+  await new Promise(done => setTimeout(done, 700));
+  await camera.harness.retake(); await camera.harness.openGallery();
+  await camera.harness.openItem(camera.harness.galleryItems[0].id);
+  assert.equal(camera.harness.contrast, kept);
 });

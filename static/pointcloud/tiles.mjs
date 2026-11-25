@@ -1,14 +1,19 @@
 import {inferenceSize} from './math.mjs';
-const TILE=512;
+const TILE=768;
 /** @typedef {{data:Uint8ClampedArray,width:number,height:number}} Pixels */
 /** @param {Pixels} pixels @param {number} width @param {number} height @param {{x:number,y:number,width:number,height:number}} [crop] */
 export function resizePixels(pixels,width,height,crop={x:0,y:0,width:pixels.width,height:pixels.height}) {
-  const data=new Uint8ClampedArray(width*height*4);
-  for(let y=0;y<height;y++)for(let x=0;x<width;x++) {
-    const sx=Math.min(pixels.width-1,Math.floor(crop.x+(x+.5)*crop.width/width));
-    const sy=Math.min(pixels.height-1,Math.floor(crop.y+(y+.5)*crop.height/height));
-    const at=(sy*pixels.width+sx)*4;
-    data.set(pixels.data.subarray(at,at+4),(y*width+x)*4);
+  // Average every source pixel a target pixel covers, so downscaled model input does not alias.
+  const data=new Uint8ClampedArray(width*height*4),sx=crop.width/width,sy=crop.height/height,sums=[0,0,0,0];
+  for(let y=0;y<height;y++) {
+    const y0=Math.min(pixels.height-1,Math.floor(crop.y+y*sy)),y1=Math.min(pixels.height,Math.max(y0+1,Math.floor(crop.y+(y+1)*sy)));
+    for(let x=0;x<width;x++) {
+      const x0=Math.min(pixels.width-1,Math.floor(crop.x+x*sx)),x1=Math.min(pixels.width,Math.max(x0+1,Math.floor(crop.x+(x+1)*sx)));
+      sums.fill(0);
+      for(let v=y0;v<y1;v++)for(let u=x0;u<x1;u++){const at=(v*pixels.width+u)*4;for(let c=0;c<4;c++)sums[c]+=pixels.data[at+c];}
+      const count=(y1-y0)*(x1-x0),at=(y*width+x)*4;
+      for(let c=0;c<4;c++)data[at+c]=sums[c]/count;
+    }
   }
   return {data,width,height};
 }
@@ -44,7 +49,7 @@ export function mergeDepthTile(sums,weights,width,tile,prediction) {
 }
 /** More views retain depth detail: wide captures run overlapping model tiles.
  * @param {Pixels} pixels
- * @param {{estimate:(data:Uint8ClampedArray,width:number,height:number,onProgress:(progress:{phase:string,percent?:number})=>void)=>Promise<{depth:Float32Array,width:number,height:number}>}} estimator
+ * @param {{estimate:(data:Uint8ClampedArray,width:number,height:number,onProgress:(progress:{phase:string,percent?:number})=>void)=>Promise<{depth:Float32Array,width:number,height:number,model?:string}>}} estimator
  * @param {(progress:{phase:string,percent?:number})=>void} onProgress
  * @param {()=>boolean} current */
 export async function estimateImageDepth(pixels,estimator,onProgress,current=()=>true) {
@@ -55,10 +60,11 @@ export async function estimateImageDepth(pixels,estimator,onProgress,current=()=
   const scale=Math.min(TILE/Math.min(pixels.width,pixels.height),2048/Math.max(pixels.width,pixels.height));
   const input=resizePixels(pixels,Math.round(pixels.width*scale),Math.round(pixels.height*scale));
   const tiles=depthTiles(input.width,input.height),sums=new Float32Array(input.width*input.height),weights=new Float32Array(sums.length);
+  let model;
   for(const [i,tile] of tiles.entries()) {
     if(!current())throw new DOMException('Avbrote.','AbortError');
     const size=inferenceSize(tile.width,tile.height,TILE),cropped=resizePixels(input,size.width,size.height,tile);
-    const result=await estimator.estimate(cropped.data,size.width,size.height,progress=>onProgress({...progress}));
+    const result=await estimator.estimate(cropped.data,size.width,size.height,progress=>onProgress({...progress}));model=result.model;
     const resized=new Float32Array(tile.width*tile.height);
     for(let y=0;y<tile.height;y++)for(let x=0;x<tile.width;x++) {
       resized[y*tile.width+x]=result.depth[Math.min(result.height-1,Math.floor((y+.5)*result.height/tile.height))*result.width+Math.min(result.width-1,Math.floor((x+.5)*result.width/tile.width))];
@@ -67,5 +73,5 @@ export async function estimateImageDepth(pixels,estimator,onProgress,current=()=
     onProgress({phase:'estimating',percent:Math.round((i+1)/tiles.length*100)});
   }
   for(let i=0;i<sums.length;i++)sums[i]=weights[i]?sums[i]/weights[i]:NaN;
-  return {depth:sums,width:input.width,height:input.height};
+  return {depth:sums,width:input.width,height:input.height,model};
 }

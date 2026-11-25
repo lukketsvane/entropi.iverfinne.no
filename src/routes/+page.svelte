@@ -29,6 +29,7 @@
 	let captureJobId = '';
 	let manualPrint = 0;
 	let pendingTaps: Pixels[] = [];
+	let sharpTap: Pixels | null = null;
 	let tapTimer: ReturnType<typeof setTimeout> | undefined;
 	let suppressCaptureClick = false;
 	let printerAnnouncement = $state('');
@@ -38,6 +39,8 @@
 	let presetActive = $state(false);
 	let position = $state(0);
 	let bandWidth = 1;
+	let contrast = $state(1);
+	let gamma = $state(1);
 	let announcement = $state('Trykk for eit djupnebilete. Hald inne medan du panorerer, og slepp for eit panorama.');
 	let progress = $state<number | null>(null);
 	let captured: Pixels | null = null;
@@ -49,14 +52,15 @@
 	let currentId: string | null = null;
 	let saveTimer: ReturnType<typeof setTimeout> | undefined;
 	let uploading = $state(0);
-	let sheet = $state<{ id: string; url: string; file: File | null; armed: boolean } | null>(null);
-	let press: { id: string; pointerId: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
+	let uploadsRunning = false;
+	let menu = $state<{ id: string; file: File | null; armed: boolean; x: number; y: number } | null>(null);
+	let press: { id: string; pointerId: number; x: number; y: number; rect: DOMRect; timer: ReturnType<typeof setTimeout> } | null = null;
 	let pressed = false;
 	let disarmTimer: ReturnType<typeof setTimeout> | undefined;
 	const canShareFiles = (file: File) => typeof navigator.share === 'function' && !!navigator.canShare?.({ files: [file] });
-	let uploadQueue: File[] = [];
-	let uploadRun = 0;
-	let uploadActive = false;
+	let depthBusy = false;
+	let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+	const depthWaiters: { priority: number; resolve: () => void }[] = [];
 	let paintFrame = 0;
 	let disposed = false;
 	let generation = 0;
@@ -68,7 +72,26 @@
 	let lastTap: { time: number; x: number; y: number } | null = null;
 	let artGesture: { id: number; time: number; x: number; y: number; moved: boolean } | null = null;
 	const artPointers = new Map<number, { x: number; y: number }>();
-	let pinchGap = 0;
+	type Pair = { cx: number; cy: number; distance: number; angle: number };
+	let twoFinger: { mode: 'pending' | 'pinch' | 'rotate' | 'panX' | 'panY'; start: Pair; last: Pair; time: number; turned: number } | null = null;
+	let lastTwoTap = 0;
+
+	/** One depth model at a time: a photograph goes ahead of queued uploads, and nothing cancels the other. */
+	async function withDepth<T>(priority: number, task: () => Promise<T>): Promise<T> {
+		clearTimeout(releaseTimer);
+		if (depthBusy) await new Promise<void>(resolve => { depthWaiters.push({ priority, resolve }); depthWaiters.sort((a, b) => b.priority - a.priority); });
+		depthBusy = true;
+		try { return await task(); }
+		finally {
+			const next = depthWaiters.shift();
+			if (next) next.resolve();
+			else {
+				depthBusy = false;
+				// Keep the model warm for the next image, then give its memory back.
+				releaseTimer = setTimeout(() => { if (!depthBusy) estimator.dispose(); }, 20000);
+			}
+		}
+	}
 
 	function stopCamera() {
 		cameraAttempt++;
@@ -80,7 +103,7 @@
 		if (saveTimer) { if (paintFrame) paint(); saveTone(); }
 		tone = null; frame = null; currentId = null;
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
-		artPointers.clear(); artGesture = null; pinchGap = 0;
+		artPointers.clear(); artGesture = null; twoFinger = null;
 	}
 	function paint() {
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
@@ -88,7 +111,7 @@
 		renderArt(art, tone, frame, recipe());
 	}
 	type Frame = { width: number; height: number; mask: Uint8Array | null };
-	function renderArt(canvas: HTMLCanvasElement, render: ReturnType<typeof prepareToneDepth>, target: Frame, values: ReturnType<typeof recipe>) {
+	function renderArt(canvas: HTMLCanvasElement, render: ReturnType<typeof prepareToneDepth>, target: Frame, values: { preset: number; position: number; width: number; contrast?: number; gamma?: number }) {
 		const { width, height, mask } = target;
 		const pixels = render({ ...values, outputWidth: width, outputHeight: height });
 		// Panorama areas without a photographed view stay black.
@@ -106,7 +129,7 @@
 		if (id) void thumbnail().then(image => gallery.update(id, values, image)).catch(() => {});
 	}
 	function recipe() {
-		return { preset, position, width: bandWidth };
+		return { preset, position, width: bandWidth, contrast, gamma };
 	}
 	function maskFor(pixels: Pixels) {
 		let mask: Uint8Array | null = null;
@@ -143,59 +166,64 @@
 			announcement = galleryItems.length ? `Galleri med ${galleryItems.length} djupnebilete.` : 'Galleriet er tomt.';
 		} catch { announcement = 'Galleriet er ikkje tilgjengeleg i denne nettlesaren.'; }
 	}
-	function stopUploads() {
-		if (!uploadActive && !uploadQueue.length) return;
-		uploadRun++; uploadQueue = []; uploadActive = false; uploading = 0;
-		estimator.dispose();
+	async function queueUploads(files: File[]) {
+		if (!files.length) return;
+		try { await gallery.enqueue(files); } catch { announcement = 'Kunne ikkje ta vare på bileta. Prøv igjen.'; return; }
+		void processUploads();
 	}
-	function queueUploads(files: File[]) {
-		if (!galleryOpen || !files.length) return;
-		uploadQueue.push(...files);
-		uploading = uploadQueue.length + (uploadActive ? 1 : 0);
-		if (!uploadActive) void runUploads(uploadRun);
-	}
-	async function runUploads(run: number) {
-		uploadActive = true;
+	/** Develop every queued upload in turn. The queue is stored, so a reload continues where it stopped. */
+	async function processUploads() {
+		if (uploadsRunning || disposed) return;
+		uploadsRunning = true;
 		let done = 0, failed = 0;
-		while (run === uploadRun && uploadQueue.length) {
-			const file = uploadQueue.shift() as File;
-			announcement = `Reknar djupn for opplasta bilete, ${uploading} att.`;
-			try { await developUpload(file, run); done++; } catch { failed++; }
-			if (run === uploadRun) uploading = uploadQueue.length;
-		}
-		if (run !== uploadRun) return;
-		uploadActive = false; uploading = 0;
-		// Free the model's memory after the whole batch, not between files.
-		estimator.dispose();
-		announcement = `${done} opplasta bilete lagt i galleriet.${failed ? ` ${failed} kunne ikkje lesast.` : ''}`;
+		try {
+			while (!disposed) {
+				const jobs = await gallery.pending();
+				uploading = jobs.length;
+				const job = jobs[0];
+				if (!job) break;
+				try {
+					const added = await developUpload(job);
+					done++;
+					if (added && galleryOpen) galleryItems = [added, ...galleryItems];
+				} catch (error) {
+					if (disposed) break;
+					// Unreadable files are dropped at once; a model failure gets two more attempts.
+					if ((error as Error)?.name === 'DecodeError' || job.attempts >= 2) { await gallery.drop(job.id); failed++; }
+					else await gallery.retry(job);
+				}
+			}
+		} catch { /* Storage is unavailable; queued files stay for the next start. */ }
+		finally { uploadsRunning = false; uploading = 0; }
+		if (done || failed) announcement = `${done} opplasta bilete lagt i galleriet.${failed ? ` ${failed} kunne ikkje lesast.` : ''}`;
 	}
-	async function developUpload(file: File, run: number) {
-		const decoded = await decodePhoto(file);
+	async function developUpload(job: { id: string; file: Blob; name: string }) {
 		let pixels: Pixels;
-		try { pixels = pixelsFor(decoded.source, decoded.width, decoded.height, 1536); } finally { decoded.close(); }
-		if (run !== uploadRun) return;
-		const prediction = await estimateImageDepth(pixels, estimator, () => {}, () => run === uploadRun);
-		if (run !== uploadRun) return;
+		try {
+			const decoded = await decodePhoto(job.file);
+			try { pixels = pixelsFor(decoded.source, decoded.width, decoded.height, 1536); } finally { decoded.close(); }
+		} catch { throw Object.assign(new Error('Kunne ikkje lese biletet.'), { name: 'DecodeError' }); }
+		const prediction = await withDepth(0, () => estimateImageDepth(pixels, estimator, () => {}));
 		const field = normalizeDepth(prediction.depth), values = recipe();
 		const target = { width: pixels.width, height: pixels.height, mask: maskFor(pixels) }, canvas = document.createElement('canvas');
 		renderArt(canvas, prepareToneDepth(field, prediction.width, prediction.height), target, values);
 		const image = await thumbnail(canvas);
 		canvas.width = canvas.height = 1;
-		const id = await gallery.save({ ...target, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth: prediction.width, depthHeight: prediction.height, recipe: values }, image);
-		if (run !== uploadRun || !galleryOpen || !image) return;
-		galleryItems = [{ id, created: Date.now(), url: URL.createObjectURL(image) }, ...galleryItems];
+		const id = await gallery.complete(job.id, { ...target, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth: prediction.width, depthHeight: prediction.height, recipe: values }, image);
+		return image ? { id, created: Date.now(), url: URL.createObjectURL(image) } : null;
 	}
 	function uploadToGallery(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
 		const files = Array.from(input.files ?? []); input.value = '';
-		queueUploads(files);
+		void queueUploads(files);
 	}
 	function tileDown(event: PointerEvent, item: { id: string; url: string }) {
 		cancelPress();
 		if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
 		pressed = false;
-		press = { id: item.id, pointerId: event.pointerId, x: event.clientX, y: event.clientY, timer: setTimeout(() => {
-			press = null; pressed = true; void openSheet(item);
+		const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+		press = { id: item.id, pointerId: event.pointerId, x: event.clientX, y: event.clientY, rect, timer: setTimeout(() => {
+			press = null; pressed = true; void openMenu(item, rect);
 		}, 500) };
 	}
 	function tileMove(event: PointerEvent) {
@@ -209,52 +237,55 @@
 		if (pressed) { pressed = false; return; }
 		void openItem(id);
 	}
-	async function openSheet(item: { id: string; url: string }) {
+	async function openMenu(item: { id: string; url: string }, rect: DOMRect) {
 		clearTimeout(disarmTimer);
-		sheet = { id: item.id, url: item.url, file: null, armed: false };
+		// A small menu beside the held tile; the grid stays as it is.
+		const x = Math.max(84, Math.min(window.innerWidth - 84, rect.left + rect.width / 2));
+		const y = rect.bottom + 64 < window.innerHeight ? rect.bottom + 8 : Math.max(8, rect.top - 60);
+		menu = { id: item.id, file: null, armed: false, x, y };
 		try {
 			const record = await gallery.get(item.id);
-			if (!record || sheet?.id !== item.id) return;
+			if (!record || menu?.id !== item.id) return;
 			const canvas = document.createElement('canvas');
 			renderArt(canvas, prepareToneDepth(Float32Array.from(record.depth, value => value / 65535), record.depthWidth, record.depthHeight),
 				{ width: record.width, height: record.height, mask: record.mask ?? null }, record.recipe);
 			const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
 			canvas.width = canvas.height = 1;
-			if (blob && sheet?.id === item.id) sheet = { ...sheet, file: new File([blob], `entropi-djupn-${item.id}.png`, { type: 'image/png' }) };
+			if (blob && menu?.id === item.id) menu = { ...menu, file: new File([blob], `entropi-djupn-${item.id}.png`, { type: 'image/png' }) };
 		} catch { announcement = 'Kunne ikkje klargjere biletet.'; }
 	}
-	function closeSheet() {
-		clearTimeout(disarmTimer); sheet = null;
+	function closeMenu() {
+		clearTimeout(disarmTimer); menu = null;
 	}
 	function download(file: File) {
 		const url = URL.createObjectURL(file), link = document.createElement('a');
 		link.href = url; link.download = file.name; link.click();
 		setTimeout(() => URL.revokeObjectURL(url), 10000);
 	}
-	function saveSheet() {
-		const file = sheet?.file;
+	function saveMenu() {
+		const file = menu?.file;
 		if (!file) return;
 		// iOS only saves to Photos through the share sheet's own Save Image action.
 		if (canShareFiles(file)) void navigator.share({ files: [file] }).catch(() => {});
 		else download(file);
-		closeSheet();
+		closeMenu();
 	}
-	function shareSheet() {
-		const file = sheet?.file;
+	function shareMenu() {
+		const file = menu?.file;
 		if (!file || !canShareFiles(file)) return;
 		void navigator.share({ files: [file] }).catch(() => {});
-		closeSheet();
+		closeMenu();
 	}
-	async function deleteSheet() {
-		const current = sheet;
+	async function deleteMenu() {
+		const current = menu;
 		if (!current) return;
 		if (!current.armed) {
-			sheet = { ...current, armed: true };
+			menu = { ...current, armed: true };
 			announcement = 'Trykk på slett ein gong til for å slette biletet.';
-			disarmTimer = setTimeout(() => { if (sheet?.id === current.id) sheet = { ...sheet, armed: false }; }, 3000);
+			disarmTimer = setTimeout(() => { if (menu?.id === current.id) menu = { ...menu, armed: false }; }, 3000);
 			return;
 		}
-		closeSheet();
+		closeMenu();
 		try {
 			await gallery.remove(current.id);
 			const removed = galleryItems.find(item => item.id === current.id);
@@ -266,22 +297,22 @@
 	}
 	function closeGallery() {
 		if (!galleryOpen) return;
-		cancelPress(); closeSheet();
-		stopUploads();
+		cancelPress(); closeMenu();
 		galleryOpen = false; releaseGallery();
 		if (mode === 'camera') void startCamera();
 	}
 	async function openItem(id: string) {
 		const opening = ++generation;
-		stopUploads();
+		cancelPress(); closeMenu();
 		try {
 			const item = await gallery.get(id);
 			if (!item || disposed || opening !== generation) return;
-			clearTapBatch(); recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera();
+			clearTapBatch(); recorder.abort(); stopPanorama(); clearResult(); stopCamera();
 			captured = null; captureJobId = ''; progress = null; lastTap = null;
 			frame = { width: item.width, height: item.height, mask: item.mask ?? null };
 			tone = prepareToneDepth(Float32Array.from(item.depth, value => value / 65535), item.depthWidth, item.depthHeight);
 			preset = item.recipe.preset; presetSlider?.setLevel(preset); position = item.recipe.position; bandWidth = item.recipe.width;
+			contrast = item.recipe.contrast ?? 1; gamma = item.recipe.gamma ?? 1;
 			currentId = id; mode = 'done';
 			galleryOpen = false; releaseGallery();
 			if (preview) { preview.active = false; preview.source = null; }
@@ -325,7 +356,8 @@
 		if (disposed || document.hidden || mode !== 'camera' || galleryOpen || stream || !video || !navigator.mediaDevices?.getUserMedia) return;
 		const attempt = ++cameraAttempt;
 		try {
-			const next = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+			// Ask for the sensor's detail; without a size the browser often streams 640 × 480.
+			const next = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
 			if (disposed || mode !== 'camera' || attempt !== cameraAttempt) {
 				next.getTracks().forEach(track => track.stop()); return;
 			}
@@ -347,19 +379,25 @@
 		return captureSnapshot(context.getImageData(0, 0, canvas.width, canvas.height));
 	}
 	function clearTapBatch() {
-		clearTimeout(tapTimer); tapTimer = undefined; pendingTaps = [];
+		clearTimeout(tapTimer); tapTimer = undefined; pendingTaps = []; sharpTap = null;
+	}
+	function sharpFrame() {
+		return video?.readyState >= 2 && video.videoWidth ? pixelsFor(video, video.videoWidth, video.videoHeight, 1536) : null;
 	}
 	function scheduleTapBatch() {
 		clearTimeout(tapTimer);
 		tapTimer = setTimeout(() => {
 			tapTimer = undefined;
 			if (recorder.active) return;
-			const frames = pendingTaps; pendingTaps = [];
+			// A single photograph keeps the full frame; panoramas register equal-sized views.
+			const frames = pendingTaps.length === 1 && sharpTap ? [sharpTap] : pendingTaps;
+			pendingTaps = []; sharpTap = null;
 			if (frames.length && !disposed && mode === 'camera') void finishCapture(frames);
 		}, 400);
 	}
 	function addTap(frame: Pixels) {
 		pendingTaps.push(frame);
+		sharpTap = pendingTaps.length === 1 ? sharpFrame() : null;
 		scheduleTapBatch();
 	}
 	const recorder = new FrameRecorder({
@@ -449,7 +487,7 @@
 	}
 	function fail(error: unknown, id: number) {
 		if (disposed || id !== generation) return;
-		clearResult(); estimator.dispose(); stopCamera(); mode = 'error';
+		clearResult(); stopCamera(); mode = 'error';
 		announcement = error instanceof Error ? error.message : 'Kunne ikkje lage djupnebiletet. Trykk for å prøve igjen.';
 	}
 	async function develop(id: number) {
@@ -457,14 +495,12 @@
 		const pixels = captured;
 		mode = 'working'; progress = null;
 		try {
-			const prediction = await estimateImageDepth(pixels, estimator, update => {
+			const prediction = await withDepth(1, () => estimateImageDepth(pixels, estimator, update => {
 				if (disposed || id !== generation) return;
 				progress = update.percent ?? null;
 				announcement = update.phase.startsWith('loading') ? 'Lastar Depth Pro 2 til eininga.' : 'Reknar djupn.';
-			}, () => !disposed && id === generation);
+			}, () => !disposed && id === generation));
 			if (disposed || id !== generation) return;
-			// Free the model's memory between photographs.
-			estimator.dispose();
 			const field = normalizeDepth(prediction.depth);
 			tone = prepareToneDepth(field, prediction.width, prediction.height);
 			frame = { width: pixels.width, height: pixels.height, mask: maskFor(pixels) };
@@ -473,7 +509,7 @@
 			if (disposed || id !== generation) return;
 			paint();
 			void archive(id, field, prediction.width, prediction.height);
-			announcement = `${VATHOGRAPHY_PRESETS[preset].label}. Djupna er estimert med Depth Pro 2. Dra vassrett for å flytte djupneområdet, og knip for breidda. Dra langs høgre kant for fem uttrykk. Hald inne for utskrift. Dobbelttrykk for eit nytt bilete.`;
+			announcement = `${VATHOGRAPHY_PRESETS[preset].label}. Djupna er estimert med ${prediction.model ?? 'Depth Pro 2'}. Dra vassrett for å flytte djupneområdet, og knip for breidda. Dra langs høgre kant for fem uttrykk. Hald inne for utskrift. Dobbelttrykk for eit nytt bilete.`;
 			queueCurrentPrint();
 		} catch (error) { fail(error, id); }
 	}
@@ -494,7 +530,7 @@
 	function saveArt(event: MouseEvent) {
 		(event.currentTarget as HTMLAnchorElement).href = art.toDataURL('image/png');
 	}
-	async function decodePhoto(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close(): void }> {
+	async function decodePhoto(file: Blob): Promise<{ source: CanvasImageSource; width: number; height: number; close(): void }> {
 		if (typeof createImageBitmap === 'function') {
 			try {
 				const bitmap = await createImageBitmap(file);
@@ -531,7 +567,7 @@
 	function pasteCapture(event: ClipboardEvent) {
 		if (galleryOpen) {
 			const files = Array.from(event.clipboardData?.files ?? []).filter(file => file.type.startsWith('image/'));
-			if (files.length) { event.preventDefault(); queueUploads(files); }
+			if (files.length) { event.preventDefault(); void queueUploads(files); }
 			return;
 		}
 		if (mode !== 'camera') return;
@@ -542,8 +578,8 @@
 	async function retake() {
 		generation++;
 		clearTapBatch();
-		recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera(); captured = null;
-		stopUploads(); galleryOpen = false; releaseGallery();
+		recorder.abort(); stopPanorama(); clearResult(); stopCamera(); captured = null;
+		cancelPress(); closeMenu(); galleryOpen = false; releaseGallery();
 		captureJobId = '';
 		capturePointer = null;
 		progress = null; lastTap = null; mode = 'camera';
@@ -562,9 +598,16 @@
 		if (!captured) { void retake(); return; }
 		clearResult(); void develop(++generation);
 	}
-	function pinchDistance() {
+	function pair(): Pair | null {
 		const [a, b] = [...artPointers.values()];
-		return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+		return a && b ? { cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, distance: Math.hypot(b.x - a.x, b.y - a.y), angle: Math.atan2(b.y - a.y, b.x - a.x) } : null;
+	}
+	const turn = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
+	const limit = (value: number) => Math.max(.25, Math.min(4, value));
+	function resetTone() {
+		position = 0; bandWidth = 1; contrast = 1; gamma = 1;
+		announcement = 'Djupneområde, breidd, kontrast og mellomtonar er nullstilte.';
+		if (mode === 'done') schedulePaint();
 	}
 	function artDown(event: PointerEvent) {
 		artPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -573,7 +616,38 @@
 			return;
 		}
 		if (artGesture) artGesture.moved = true;
-		lastTap = null; pinchGap = pinchDistance();
+		lastTap = null;
+		const start = pair();
+		twoFinger = artPointers.size === 2 && start ? { mode: 'pending', start, last: start, time: performance.now(), turned: 0 } : null;
+	}
+	function twoFingerMove() {
+		const now = pair(), gesture = twoFinger;
+		if (!now || !gesture) return;
+		const { start, last } = gesture;
+		if (gesture.mode === 'pending') {
+			// Lock to the first clear intent so a pan does not also rotate or pinch.
+			const dx = now.cx - start.cx, dy = now.cy - start.cy, rotation = turn(now.angle - start.angle), scale = Math.log(now.distance / Math.max(1, start.distance));
+			if (Math.abs(rotation) > .17) gesture.mode = 'rotate';
+			else if (Math.abs(scale) > .08) gesture.mode = 'pinch';
+			else if (Math.hypot(dx, dy) > 14) gesture.mode = Math.abs(dx) > Math.abs(dy) ? 'panX' : 'panY';
+			else return;
+		}
+		const width = Math.max(1, art?.clientWidth || 1), height = Math.max(1, art?.clientHeight || 1);
+		if (gesture.mode === 'pinch' && last.distance > 0) bandWidth = Math.max(.25, Math.min(3, bandWidth * now.distance / last.distance));
+		else if (gesture.mode === 'panX') contrast = limit(contrast * Math.exp((now.cx - last.cx) / width * 2));
+		else if (gesture.mode === 'panY') gamma = limit(gamma * Math.exp((now.cy - last.cy) / height * 2));
+		else if (gesture.mode === 'rotate') {
+			// A dial: every 30 degrees turns to the next expression.
+			gesture.turned += turn(now.angle - last.angle);
+			const steps = Math.trunc(gesture.turned / (Math.PI / 6));
+			if (steps) {
+				gesture.turned -= steps * Math.PI / 6;
+				const count = VATHOGRAPHY_PRESETS.length;
+				selectPreset(((preset + steps) % count + count) % count);
+			}
+		}
+		gesture.last = now;
+		if (gesture.mode !== 'rotate') schedulePaint();
 	}
 	function artMove(event: PointerEvent) {
 		const last = artPointers.get(event.pointerId);
@@ -585,15 +659,19 @@
 			if (!artGesture.moved && Math.hypot(next.x - artGesture.x, next.y - artGesture.y) <= 12) return;
 			artGesture.moved = true;
 			setPosition(position + (next.x - last.x) / Math.max(1, art?.clientWidth || 1));
-		} else if (artPointers.size === 2) {
-			const distance = pinchDistance();
-			if (pinchGap > 0 && distance > 0) { bandWidth = Math.max(.25, Math.min(3, bandWidth * distance / pinchGap)); schedulePaint(); }
-			pinchGap = distance;
-		}
+		} else if (artPointers.size === 2) twoFingerMove();
+	}
+	function endTwoFinger() {
+		const gesture = twoFinger;
+		twoFinger = null;
+		if (!gesture || gesture.mode !== 'pending' || performance.now() - gesture.time > 300 || mode !== 'done') return;
+		const now = performance.now();
+		if (now - lastTwoTap < 400) { lastTwoTap = 0; resetTone(); }
+		else lastTwoTap = now;
 	}
 	function artUp(event: PointerEvent) {
 		artPointers.delete(event.pointerId);
-		pinchGap = pinchDistance();
+		if (twoFinger && artPointers.size < 2) endTwoFinger();
 		const start = artGesture;
 		if (!start || start.id !== event.pointerId) return;
 		artGesture = null;
@@ -606,12 +684,13 @@
 		else lastTap = tap;
 	}
 	function artCancel(event: PointerEvent) {
-		artPointers.delete(event.pointerId); pinchGap = pinchDistance();
+		artPointers.delete(event.pointerId);
+		if (artPointers.size < 2) twoFinger = null;
 		if (artGesture?.id === event.pointerId) artGesture = null;
 	}
 	function keys(event: KeyboardEvent) {
 		if (event.key !== 'Escape') return;
-		if (sheet) closeSheet(); else if (galleryOpen) closeGallery(); else void retake();
+		if (menu) closeMenu(); else if (galleryOpen) closeGallery(); else void retake();
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
@@ -639,6 +718,7 @@
 		const printerChecks = [0, 300, 1200, 3000].map(delay => setTimeout(restorePrinter, delay));
 		try { preview = new Viewfinder(finder); } catch { announcement = 'Kamerasøkjaren kunne ikkje startast. Trykk for å velje eit bilete.'; }
 		void startCamera();
+		void processUploads();
 		const suspend = () => {
 			clearTimeout(resumeTimer); clearTapBatch(); recorder.abort(); stopCamera();
 			shake?.suspend();
@@ -701,7 +781,7 @@
 	{:else if mode === 'error'}
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
-	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Dra vassrett for å flytte djupneområdet, og knip med to fingrar for breidda. Dra ein finger langs høgre kant for fem uttrykk. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
+	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Éin finger vassrett flyttar djupneområdet. To fingrar: knip for breidda, dra vassrett for kontrast, dra loddrett for mellomtonar, vri for å skifte mellom fem uttrykk, og dobbelttrykk for å nullstille. Dra langs høgre kant for uttrykka. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
 		<canvas bind:this={art}></canvas>
 	</div>
 	<div class="quality-rail" class:active={presetActive} aria-hidden="true">
@@ -723,27 +803,25 @@
 					<div class="pending" aria-hidden="true"><div class="progress indeterminate"><i style:width="28%"></i></div></div>
 				{/each}
 				{#each galleryItems as item (item.id)}
-					<button type="button" aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}. Hald inne for å lagre, dele eller slette.`}
+					<button type="button" class:held={menu?.id === item.id} aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}. Hald inne for å lagre, dele eller slette.`}
 						onpointerdown={event => tileDown(event, item)} onpointermove={tileMove} onpointerup={cancelPress} onpointercancel={cancelPress}
 						oncontextmenu={event => event.preventDefault()} onclick={() => tileClick(item.id)}><img src={item.url} alt="" /></button>
 				{/each}
 			</div>
-			{#if sheet}
-				<div class="sheet" role="presentation" onclick={event => { if (event.target === event.currentTarget) closeSheet(); }}>
-					<img src={sheet.url} alt="" />
-					<div class="sheet-actions" role="group" aria-label="Handlingar for biletet">
-						<button type="button" aria-label="Lagre i bilete" disabled={!sheet.file} onclick={saveSheet}>
-							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" /></svg>
+			{#if menu}
+				<div class="menu-catcher" role="presentation" onpointerdown={closeMenu}></div>
+				<div class="quick-menu" role="menu" aria-label="Handlingar for biletet" style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
+					<button type="button" role="menuitem" aria-label="Lagre i bilete" disabled={!menu.file} onclick={saveMenu}>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" /></svg>
+					</button>
+					{#if menu.file && canShareFiles(menu.file)}
+						<button type="button" role="menuitem" aria-label="Del biletet" onclick={shareMenu}>
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M8 8l4-4 4 4M7 11H5v9h14v-9h-2" /></svg>
 						</button>
-						{#if sheet.file && canShareFiles(sheet.file)}
-							<button type="button" aria-label="Del biletet" onclick={shareSheet}>
-								<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M8 8l4-4 4 4M7 11H5v9h14v-9h-2" /></svg>
-							</button>
-						{/if}
-						<button type="button" class:armed={sheet.armed} aria-label={sheet.armed ? 'Stadfest sletting' : 'Slett biletet'} onclick={deleteSheet}>
-							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6" /></svg>
-						</button>
-					</div>
+					{/if}
+					<button type="button" role="menuitem" class:armed={menu.armed} aria-label={menu.armed ? 'Stadfest sletting' : 'Slett biletet'} onclick={deleteMenu}>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6" /></svg>
+					</button>
 				</div>
 			{/if}
 		</div>
@@ -752,6 +830,8 @@
 	<input bind:this={photoInput} type="file" accept="image/*" multiple onchange={capture} oncancel={() => void startCamera()} tabindex="-1" aria-label="Kamerabilete" />
 	<input class="sr-only" type="range" min="0" max="4" step="1" value={preset} aria-label="Djupneuttrykk" aria-valuetext={VATHOGRAPHY_PRESETS[preset].label} oninput={event => selectPreset(Number(event.currentTarget.value))} />
 	<input class="sr-only" type="range" min="-1" max="1" step="0.02" value={position} aria-label="Djupneområde" oninput={event => setPosition(Number(event.currentTarget.value))} />
+	<input class="sr-only" type="range" min="0.25" max="4" step="0.05" value={contrast} aria-label="Kontrast" oninput={event => { contrast = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
+	<input class="sr-only" type="range" min="0.25" max="4" step="0.05" value={gamma} aria-label="Mellomtonar, lågare er lysare" oninput={event => { gamma = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
 	<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
 	<span class="sr-only" role="status" aria-live="polite">{printerAnnouncement}</span>
 </main>

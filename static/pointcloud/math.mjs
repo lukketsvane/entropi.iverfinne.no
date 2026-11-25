@@ -1,6 +1,14 @@
 // Camera colours and AI inverse depth are separate inputs. No brightness-to-depth fallback.
 /** @param {number} width @param {number} height */
-export function inferenceSize(width, height, max = 768) {
+/** Shrink to fit max, in multiples of 32; never enlarge. @param {number} width @param {number} height @param {number} max */
+export function fitSize(width, height, max) {
+  if (Math.max(width, height) <= max) return { width, height };
+  const scale = max / Math.max(width, height);
+  return { width: Math.max(32, Math.round(width * scale / 32) * 32), height: Math.max(32, Math.round(height * scale / 32) * 32) };
+}
+
+/** @param {number} width @param {number} height */
+export function inferenceSize(width, height, max = 1024) {
   if (!(width > 0 && height > 0)) throw new Error('Ugyldig kamerabilete.');
   const scale = max / Math.max(width, height);
   return { width: Math.max(160, Math.round(width * scale / 32) * 32), height: Math.max(160, Math.round(height * scale / 32) * 32) };
