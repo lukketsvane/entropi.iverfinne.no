@@ -1,4 +1,4 @@
-/** @typedef {{preset:number,position:number,width:number,contrast?:number,gamma?:number,look?:number,strength?:number,structure?:number,sharpen?:number,grain?:number,dither?:number,cell?:number,threshold?:number,invert?:boolean}} Recipe */
+/** @typedef {{preset:number,position:number,width:number,contrast?:number,gamma?:number,look?:number,strength?:number,structure?:number,sharpen?:number,grain?:number,brightness?:number,dither?:number,cell?:number,threshold?:number,invert?:boolean}} Recipe */
 /** @typedef {{width:number,height:number,mask:Uint8Array|null,depth:Uint16Array,depthWidth:number,depthHeight:number,recipe:Recipe,photo?:Blob}} Item */
 /** @typedef {{id:string,created:number,thumbnail:Blob|null}} Entry */
 /** @typedef {{id:string,created:number,file:Blob,name:string,attempts:number}} Pending */

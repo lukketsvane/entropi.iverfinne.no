@@ -16,9 +16,9 @@ import { memoryIndexedDB } from './helpers/indexeddb.mjs';
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
 export const harness = {
-  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys, uploadToGallery, tileDown, tileMove, cancelPress, tileClick, saveMenu, shareMenu, deleteMenu,
+  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, selectLook, openGallery, closeGallery, openItem, keys, uploadToGallery, tileDown, tileMove, cancelPress, tileClick, saveMenu, shareMenu, deleteMenu,
   get menu(){ return menu; }, get contrast(){ return contrast; }, get gamma(){ return gamma; },
-  get look(){ return look; }, get structure(){ return structure; }, get sharpen(){ return sharpen; }, get grain(){ return grain; }, get strength(){ return strength; },
+  get look(){ return look; }, get structure(){ return structure; }, get sharpen(){ return sharpen; }, get grain(){ return grain; }, get strength(){ return strength; }, get brightness(){ return brightness; },
   get level(){ return level; }, get selecting(){ return selecting; }, get selected(){ return selected; }, toggleSelecting, saveSelection, shareSelection, deleteSelection, selectionReady,
   get uploading(){ return uploading; },
   get galleryOpen(){ return galleryOpen; }, get galleryItems(){ return galleryItems; }, get currentId(){ return currentId; },
@@ -185,10 +185,10 @@ test('a two-finger pinch changes the band width and cannot become a long-press p
   assert.equal(camera.requested.length, 0); assert.equal(camera.writes.length, 0);
 });
 
-test('the right edge selects five expressions, repaints without inference and is remembered', async t => {
+test('the left edge selects five expressions, repaints without inference and is remembered', async t => {
   const storage = new Map();
   const camera = fixture(false, { storage }); t.after(camera.cleanup);
-  const slider = camera.slider('right');
+  const slider = camera.slider('left');
   assert.equal(slider.options.levels, 5); assert.equal(camera.harness.preset, 1);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
   const images = new Set([grey(camera.paints.at(-1)).join()]);
@@ -200,7 +200,7 @@ test('the right edge selects five expressions, repaints without inference and is
   assert.equal(images.size, 5); assert.equal(camera.estimates(), 1);
   assert.equal(storage.get('entropi-vatho'), '4'); assert.equal(slider.level, 4);
   const next = fixture(false, { storage }); t.after(next.cleanup);
-  assert.equal(next.harness.preset, 4); assert.equal(next.slider('right').level, 4);
+  assert.equal(next.harness.preset, 4); assert.equal(next.slider('left').level, 4);
 });
 
 test('a failed depth estimate keeps the photo and retry develops it without a new capture', async t => {
@@ -294,7 +294,7 @@ test('each developed image is kept in the gallery grid and reopens with its expr
   const database = memoryIndexedDB();
   const camera = fixture(false, { database }); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.harness.currentId);
-  const count = camera.paints.length; camera.slider('right').select(3);
+  const count = camera.paints.length; camera.slider('left').select(3);
   await waitFor(() => camera.paints.length > count);
   const chosen = grey(camera.paints.at(-1));
   await camera.harness.retake(); assert.equal(camera.harness.mode, 'camera');
@@ -303,7 +303,7 @@ test('each developed image is kept in the gallery grid and reopens with its expr
   assert.match(camera.harness.galleryItems[0].url, /^blob:/);
   await camera.harness.openItem(camera.harness.galleryItems[0].id);
   assert.equal(camera.harness.mode, 'done'); assert.equal(camera.harness.galleryOpen, false);
-  assert.equal(camera.harness.preset, 3); assert.equal(camera.slider('right').level, 3);
+  assert.equal(camera.harness.preset, 3); assert.equal(camera.slider('left').level, 3);
   assert.deepEqual(grey(camera.paints.at(-1)), chosen);
   assert.equal(camera.estimates(), 1); assert.equal(camera.writes.length, 0);
   const next = fixture(false, { database }); t.after(next.cleanup);
@@ -501,17 +501,30 @@ const fingers = (camera, frames) => {
 };
 const glide = (from, by, steps = 12) => Array.from({ length: steps + 1 }, (_, i) => from.map(([x, y]) => [x + by[0] * i / steps, y + by[1] * i / steps]));
 
-test('the left edge chooses a colour look, remembered and applied without inference', async t => {
+test('the right edge chooses a setting that one finger changes, without inference', async t => {
   const storage = new Map();
   const camera = fixture(false, { storage }); t.after(camera.cleanup);
-  const left = camera.slider('left');
-  assert.equal(left.options.levels, finish.LOOKS.length);
+  const right = camera.slider('right'), pick = index => right.select(right.options.levels - 1 - index);
+  assert.equal(right.options.levels, 13);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
-  const blue = finish.LOOKS.findIndex(look => look.id === 'blue'), count = camera.paints.length;
-  left.select(blue); await waitFor(() => camera.paints.length > count);
+  pick(7); fingers(camera, glide([[150, 400]], [0, -150]));
+  await waitFor(() => camera.harness.look !== 0);
+  assert.equal(storage.get('entropi-look'), String(camera.harness.look));
+  camera.harness.selectLook(0);
+  const before = grey(camera.paints.at(-1)).reduce((sum, v) => sum + v, 0), count = camera.paints.length;
+  pick(2); fingers(camera, glide([[150, 400]], [0, -40]));
+  await waitFor(() => camera.harness.brightness > 0 && camera.paints.length > count);
+  assert.ok(grey(camera.paints.at(-1)).reduce((sum, v) => sum + v, 0) > before, 'Brightness lifts the image');
+  assert.equal(camera.harness.structure, 0); assert.equal(camera.estimates(), 1);
+});
+
+test('the colour look tints the depth', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  const count = camera.paints.length;
+  camera.harness.selectLook(finish.LOOKS.findIndex(look => look.id === 'blue')); await waitFor(() => camera.paints.length > count);
   const image = camera.paints.at(-1);
   assert.ok(image.data[2] > image.data[0], 'Blue look tints the depth');
-  assert.equal(storage.get('entropi-look'), String(blue)); assert.equal(camera.estimates(), 1);
 });
 
 test('one finger up adds the photograph structure while sideways still moves the depth band', async t => {
@@ -568,11 +581,11 @@ test('the quick menu can start a selection, and Escape leaves select mode before
 test('a reopened gallery image keeps its colour look and photo structure', async t => {
   const camera = await developed(); t.after(camera.cleanup);
   await waitFor(() => camera.harness.currentId);
-  camera.slider('left').select(2);
+  camera.harness.selectLook(2);
   fingers(camera, glide([[150, 400]], [0, -150]));
   const kept = camera.harness.structure;
   await new Promise(done => setTimeout(done, 700));
-  await camera.harness.retake(); camera.slider('left').select(0);
+  await camera.harness.retake(); camera.harness.selectLook(0);
   await camera.harness.openGallery(); await camera.harness.openItem(camera.harness.galleryItems[0].id);
   assert.equal(camera.harness.look, 2); assert.equal(camera.harness.structure, kept);
 });

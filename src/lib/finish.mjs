@@ -145,16 +145,17 @@ export function photoDetail(rgba, width, height) {
 
 /** Turn a greyscale depth tone (RGBA) into the finished look, in place.
  * @param {Uint8ClampedArray} pixels @param {number} width @param {number} height
- * @param {{look?:number,strength?:number,structure?:number,grain?:number,dither?:number,cell?:number,threshold?:number,invert?:boolean}} options @param {Float32Array|null} [detail] */
-export function finishArt(pixels, width, height, { look = 0, strength = 1, structure = 0, grain = 0, dither = 0, cell = 1, threshold = 0, invert = false } = {}, detail = null) {
+ * @param {{look?:number,strength?:number,structure?:number,grain?:number,brightness?:number,dither?:number,cell?:number,threshold?:number,invert?:boolean}} options @param {Float32Array|null} [detail] */
+export function finishArt(pixels, width, height, { look = 0, strength = 1, structure = 0, grain = 0, brightness = 0, dither = 0, cell = 1, threshold = 0, invert = false } = {}, detail = null) {
   const ramp = ramps[Number.isInteger(look) && look >= 0 && look < ramps.length ? look : 0];
   const mix = Math.max(0, Math.min(1, strength)), texture = detail ? Math.max(0, Math.min(1, structure)) * 640 : 0, noise = Math.max(0, Math.min(1, grain)) * 48;
   const style = Number.isInteger(dither) && dither > 0 && dither < DITHERS.length ? DITHERS[dither].id : '';
-  if (look === 0 && !texture && !noise && !style && !invert) return pixels;
+  const lift = Math.max(-1, Math.min(1, brightness)) * 128;
+  if (look === 0 && !texture && !noise && !style && !invert && !lift) return pixels;
   const tone = new Uint8ClampedArray(width * height);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const i = y * width + x;
-    let v = pixels[i * 4];
+    let v = pixels[i * 4] + lift;
     if (texture) v += (detail?.[i] ?? 0) * texture;
     if (noise) v += grainTile[(y & 255) * 256 + (x & 255)] * noise;
     tone[i] = v;

@@ -26,7 +26,7 @@
 	let printer: PX10Printer | null = null;
 	let shake: ShakeToClear | null = null;
 	let presetSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
-	let lookSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
+	let settingSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
 	let printSession = '';
 	let captureJobId = '';
 	let manualPrint = 0;
@@ -44,7 +44,17 @@
 	let contrast = $state(1);
 	let gamma = $state(1);
 	let look = $state(0);
-	let lookActive = $state(false);
+	let settingActive = $state(false);
+	let setting = $state(0);
+	let settingTravel = 0;
+	let brightness = $state(0);
+	const SETTINGS = [
+		{ id: 'structure', label: 'Struktur' }, { id: 'contrast', label: 'Kontrast' }, { id: 'brightness', label: 'Lysstyrke' },
+		{ id: 'gamma', label: 'Mellomtonar' }, { id: 'width', label: 'Breidd' }, { id: 'sharpen', label: 'Skarpleik' },
+		{ id: 'grain', label: 'Korn' }, { id: 'look', label: 'Farge' }, { id: 'strength', label: 'Fargestyrke' },
+		{ id: 'dither', label: 'Dithering' }, { id: 'cell', label: 'Punktstorleik' }, { id: 'threshold', label: 'Terskel' },
+		{ id: 'invert', label: 'Inverter' },
+	] as const;
 	let strength = $state(1);
 	let structure = $state(0);
 	let sharpen = $state(0);
@@ -173,11 +183,11 @@
 		if (id) void thumbnail().then(image => gallery.update(id, values, image)).catch(() => {});
 	}
 	function recipe() {
-		return { preset, position, width: bandWidth, contrast, gamma, look, strength, structure, sharpen, grain, dither, cell, threshold, invert };
+		return { preset, position, width: bandWidth, contrast, gamma, brightness, look, strength, structure, sharpen, grain, dither, cell, threshold, invert };
 	}
 	function applyRecipe(values: Partial<Recipe>) {
 		preset = values.preset ?? preset; presetSlider?.setLevel(preset);
-		look = values.look ?? 0; lookSlider?.setLevel(look);
+		look = values.look ?? 0; brightness = values.brightness ?? 0;
 		position = values.position ?? 0; bandWidth = values.width ?? 1; contrast = values.contrast ?? 1; gamma = values.gamma ?? 1;
 		strength = values.strength ?? 1; structure = values.structure ?? 0; sharpen = values.sharpen ?? 0; grain = values.grain ?? 0;
 		dither = values.dither ?? 0; cell = values.cell ?? 1; threshold = values.threshold ?? 0; invert = values.invert ?? false;
@@ -467,7 +477,6 @@
 	}
 	function selectLook(level: number) {
 		look = level;
-		lookSlider?.setLevel(level);
 		try { window.localStorage?.setItem('entropi-look', String(level)); } catch {}
 		announcement = `Farge: ${LOOKS[level].label}.`;
 		if (mode === 'done') schedulePaint();
@@ -756,14 +765,64 @@
 	const limit = (value: number) => Math.max(.25, Math.min(4, value));
 	function resetTone() {
 		position = 0; bandWidth = 1; contrast = 1; gamma = 1; strength = 1; structure = 0; sharpen = 0; grain = 0;
-		dither = 0; cell = 1; threshold = 0; invert = false;
-		announcement = 'Djupneområde, breidd, kontrast, mellomtonar, struktur, skarpleik, korn, fargestyrke og dithering er nullstilte.';
+		dither = 0; cell = 1; threshold = 0; invert = false; brightness = 0;
+		announcement = 'Djupneområde, breidd, kontrast, lysstyrke, mellomtonar, struktur, skarpleik, korn, fargestyrke og dithering er nullstilte.';
 		if (mode === 'done') schedulePaint();
+	}
+	const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+	/** The level of the setting chosen on the right edge, 0…1. */
+	function settingLevel() {
+		switch (SETTINGS[setting].id) {
+			case 'structure': return structure;
+			case 'contrast': return .5 + Math.log(contrast) / Math.log(16);
+			case 'brightness': return (brightness + 1) / 2;
+			case 'gamma': return .5 - Math.log(gamma) / Math.log(16);
+			case 'width': return (bandWidth - .25) / 2.75;
+			case 'sharpen': return sharpen / 1.5;
+			case 'grain': return grain;
+			case 'look': return look / (LOOKS.length - 1);
+			case 'strength': return strength;
+			case 'dither': return dither / (DITHERS.length - 1);
+			case 'cell': return (cell - 1) / 19;
+			case 'threshold': return (threshold + 1) / 2;
+			case 'invert': return invert ? 1 : 0;
+		}
+	}
+	/** One finger up or down changes the setting chosen on the right edge; up is more. */
+	function adjustSetting(amount: number) {
+		const id = SETTINGS[setting].id;
+		if (id === 'look' || id === 'dither' || id === 'invert') {
+			settingTravel += amount;
+			const steps = Math.trunc(settingTravel / .08);
+			if (!steps) return;
+			settingTravel -= steps * .08;
+			if (id === 'look') selectLook(((look + steps) % LOOKS.length + LOOKS.length) % LOOKS.length);
+			else if (id === 'dither') { dither = ((dither + steps) % DITHERS.length + DITHERS.length) % DITHERS.length; announcement = `Dithering: ${DITHERS[dither].label}.`; }
+			else if (steps % 2) { invert = !invert; announcement = invert ? 'Invertert.' : 'Ikkje invertert.'; }
+		}
+		else if (id === 'structure') structure = clamp(structure + amount * 1.5, 0, 1);
+		else if (id === 'contrast') contrast = limit(contrast * Math.exp(amount * 2));
+		else if (id === 'brightness') brightness = clamp(brightness + amount * 2, -1, 1);
+		else if (id === 'gamma') gamma = limit(gamma * Math.exp(-amount * 2));
+		else if (id === 'width') bandWidth = clamp(bandWidth * Math.exp(amount * 2), .25, 3);
+		else if (id === 'sharpen') sharpen = clamp(sharpen + amount * 1.5, 0, 1.5);
+		else if (id === 'grain') grain = clamp(grain + amount * 1.5, 0, 1);
+		else if (id === 'strength') strength = clamp(strength + amount * 1.5, 0, 1);
+		else if (id === 'cell') cell = clamp(cell + amount * 30, 1, 20);
+		else if (id === 'threshold') threshold = clamp(threshold + amount * 2, -1, 1);
+		showLevel(settingLevel());
+		schedulePaint();
+	}
+	function selectSetting(level: number) {
+		setting = SETTINGS.length - 1 - level; settingTravel = 0;
+		announcement = `${SETTINGS[setting].label}. Dra ein finger opp eller ned på biletet.`;
+		if (mode === 'done') showLevel(settingLevel());
 	}
 	function artDown(event: PointerEvent) {
 		artPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		if (artPointers.size === 1 && event.isPrimary) {
 			artGesture = { id: event.pointerId, time: performance.now(), x: event.clientX, y: event.clientY, moved: false, axis: null };
+			settingTravel = 0;
 			return;
 		}
 		if (artGesture) artGesture.moved = true;
@@ -872,11 +931,7 @@
 			artGesture.moved = true;
 			artGesture.axis ??= Math.abs(next.x - artGesture.x) > Math.abs(next.y - artGesture.y) ? 'x' : 'y';
 			if (artGesture.axis === 'x') { setPosition(position + (next.x - last.x) / Math.max(1, art?.clientWidth || 1)); showLevel((position + 1) / 2); }
-			else {
-				// Up brings in more of the photograph's own structure.
-				structure = Math.max(0, Math.min(1, structure - (next.y - last.y) / Math.max(1, art?.clientHeight || 1) * 1.5));
-				showLevel(structure); schedulePaint();
-			}
+			else adjustSetting(-(next.y - last.y) / Math.max(1, art?.clientHeight || 1));
 		} else if (artPointers.size === 2) twoFingerMove();
 		else if (artPointers.size === 3) threeFingerMove();
 		else if (artPointers.size === 4) fourFingerMove();
@@ -940,10 +995,10 @@
 			if (Number.isInteger(savedLook) && savedLook >= 0 && savedLook < LOOKS.length) look = savedLook;
 			torch = window.localStorage?.getItem('entropi-torch') === '1';
 		} catch {}
-		lookSlider = attachEdgeQualitySlider(window, {edge: 'left', levels: LOOKS.length, initialLevel: look, onLevel: selectLook,
-			onActive: active => { lookActive = active; }});
-		presetSlider = attachEdgeQualitySlider(window, {levels: VATHOGRAPHY_PRESETS.length, initialLevel: preset, onLevel: selectPreset,
+		presetSlider = attachEdgeQualitySlider(window, {edge: 'left', levels: VATHOGRAPHY_PRESETS.length, initialLevel: preset, onLevel: selectPreset,
 			onActive: active => { presetActive = active; }});
+		settingSlider = attachEdgeQualitySlider(window, {levels: SETTINGS.length, initialLevel: SETTINGS.length - 1 - setting, onLevel: selectSetting,
+			onActive: active => { settingActive = active; }});
 		shake = new ShakeToClear({ target: window, hasDraft: () => recorder.active || pendingTaps.length > 0 || mode !== 'camera', clear: clearCanvas });
 		shake.start();
 		printer = new PX10Printer();
@@ -990,7 +1045,7 @@
 		return () => {
 			disposed = true; generation++; clearTimeout(resumeTimer); clearTimeout(uploadTimer); clearTapBatch(); recorder.abort();
 			presetSlider?.dispose(); presetSlider = null;
-			lookSlider?.dispose(); lookSlider = null; clearTimeout(levelTimer);
+			settingSlider?.dispose(); settingSlider = null; clearTimeout(levelTimer);
 			shake?.dispose(); shake = null;
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
@@ -1021,7 +1076,7 @@
 		{/if}
 	</div>
 	{#if mode === 'camera' || mode === 'recording'}
-		<button class="capture-plane" type="button" aria-label="Trykk for eit djupnebilete og utskrift. Hald inne for panorama. Dra ein finger langs høgre kant for fem djupneuttrykk. Rist for å tømme lerretet. Trykk med to fingrar for å slå lommelykta av og på. Dei første trykka gir systemløyve når det trengst."
+		<button class="capture-plane" type="button" aria-label="Trykk for eit djupnebilete og utskrift. Hald inne for panorama. Dra ein finger langs venstre kant for fem djupneuttrykk. Rist for å tømme lerretet. Trykk med to fingrar for å slå lommelykta av og på. Dei første trykka gir systemløyve når det trengst."
 			onpointerdown={beginCapture} onpointerup={endCapture} onpointercancel={cancelCapture} onlostpointercapture={cancelCapture} oncontextmenu={event => event.preventDefault()} onclick={captureClick}></button>
 		<button class="access-control" type="button" aria-label="Vel bilete frå telefonen" onclick={openCapture}><i class="plus" aria-hidden="true"></i></button>
 	{:else if mode === 'working'}
@@ -1030,14 +1085,15 @@
 	{:else if mode === 'error'}
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
-	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Éin finger vassrett flyttar djupneområdet. To fingrar: knip for breidda, dra vassrett for kontrast, dra loddrett for mellomtonar, vri for å skifte mellom fem uttrykk, og dobbelttrykk for å nullstille. Éin finger loddrett gir struktur frå fotoet. Tre fingrar: loddrett for korn, vassrett for skarpleik, knip for fargestyrke. Fire fingrar: vassrett for dithering, loddrett for punktstorleik, knip for terskel, trykk for å invertere. Dra langs høgre kant for uttrykka og langs venstre kant for fargar. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
+	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Éin finger vassrett flyttar djupneområdet. To fingrar: knip for breidda, dra vassrett for kontrast, dra loddrett for mellomtonar, vri for å skifte mellom fem uttrykk, og dobbelttrykk for å nullstille. Éin finger loddrett endrar innstillinga som er vald langs høgre kant: struktur, kontrast, lysstyrke, mellomtonar, breidd, skarpleik, korn, farge, fargestyrke, dithering, punktstorleik, terskel eller invertering. Tre fingrar: loddrett for korn, vassrett for skarpleik, knip for fargestyrke. Fire fingrar: vassrett for dithering, loddrett for punktstorleik, knip for terskel, trykk for å invertere. Dra langs venstre kant for uttrykka og langs høgre kant for innstillingane. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
 		<canvas bind:this={art}></canvas>
 	</div>
-	<div class="quality-rail" class:active={presetActive} aria-hidden="true">
+	<div class="quality-rail primitive-rail" class:active={presetActive} aria-hidden="true">
 		{#each [4, 3, 2, 1, 0] as level, index}<i class:chosen={preset === level} style:top={`${index * 20 + 10}%`}></i>{/each}
 	</div>
-	<div class="quality-rail primitive-rail" class:active={lookActive} aria-hidden="true">
-		{#each LOOKS.map((_, index) => LOOKS.length - 1 - index) as level, index}<i class:chosen={look === level} style:top={`${(index + .5) * 100 / LOOKS.length}%`} style:background={`linear-gradient(90deg, rgb(${LOOKS[level].stops[0][1]}), rgb(${LOOKS[level].stops.at(-1)?.[1]}))`}></i>{/each}
+	<div class="quality-rail setting-rail" class:active={settingActive} aria-hidden="true">
+		{#each SETTINGS as item, index}<i class:chosen={setting === index} style:top={`${(index + .5) * 100 / SETTINGS.length}%`}></i>{/each}
+		{#if settingActive}<span class="setting-label" style:top={`${(setting + .5) * 100 / SETTINGS.length}%`}>{SETTINGS[setting].label}</span>{/if}
 	</div>
 	{#if level !== null}<div class="level" aria-hidden="true"><i style:width={`${level * 100}%`}></i></div>{/if}
 	{#if mode === 'done'}
