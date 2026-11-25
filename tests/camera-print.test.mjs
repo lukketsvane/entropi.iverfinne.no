@@ -587,8 +587,8 @@ test('an upload that keeps crashing the page is dropped after three starts inste
   assert.equal(camera.estimates(), 0); assert.equal((await store.pending()).length, 0);
 });
 
-test('the WebGPU model stays off unless the manifest enables it', async () => {
+test('the WebGPU model is enabled by the manifest, which can switch it off without a release', async () => {
   const manifest = JSON.parse(fs.readFileSync('static/pointcloud/models/manifest.json', 'utf8'));
-  assert.equal(manifest.webgpu.enabled, false);
+  assert.equal(manifest.webgpu.enabled, true);
   assert.match(fs.readFileSync('static/pointcloud/depth-worker.mjs', 'utf8'), /spec\.enabled !== true/);
 });

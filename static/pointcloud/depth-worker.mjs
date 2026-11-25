@@ -43,7 +43,7 @@ function configure(ort) {
 // The larger model at higher resolution, where the browser offers WebGPU.
 async function gpuEngine(manifest, id, cache) {
   const spec = manifest.webgpu;
-  // Off until it is measured on phones: B on WebGPU crashed an iPhone 16e.
+  // The manifest can switch the GPU model off without a new release.
   if (!spec || spec.enabled !== true || !(await self.navigator?.gpu?.requestAdapter?.().catch(() => null))) return null;
   const ort = await import('./vendor/ort.webgpu.min.mjs');
   configure(ort);
