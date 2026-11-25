@@ -18,6 +18,7 @@
 	let video: HTMLVideoElement;
 	let finder: HTMLCanvasElement;
 	let photoInput: HTMLInputElement;
+	let uploadInput: HTMLInputElement;
 	let art: HTMLCanvasElement;
 	let stream: MediaStream | null = null;
 	let preview: Viewfinder | null = null;
@@ -47,6 +48,10 @@
 	let galleryItems = $state<{ id: string; created: number; url: string }[]>([]);
 	let currentId: string | null = null;
 	let saveTimer: ReturnType<typeof setTimeout> | undefined;
+	let uploading = $state(0);
+	let uploadQueue: File[] = [];
+	let uploadRun = 0;
+	let uploadActive = false;
 	let paintFrame = 0;
 	let disposed = false;
 	let generation = 0;
@@ -75,12 +80,16 @@
 	function paint() {
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
 		if (!tone || !frame || !art) return;
-		const { width, height, mask } = frame;
-		const pixels = tone({ preset, position, width: bandWidth, outputWidth: width, outputHeight: height });
+		renderArt(art, tone, frame, recipe());
+	}
+	type Frame = { width: number; height: number; mask: Uint8Array | null };
+	function renderArt(canvas: HTMLCanvasElement, render: ReturnType<typeof prepareToneDepth>, target: Frame, values: ReturnType<typeof recipe>) {
+		const { width, height, mask } = target;
+		const pixels = render({ ...values, outputWidth: width, outputHeight: height });
 		// Panorama areas without a photographed view stay black.
 		if (mask) for (let i = 0; i < mask.length; i++) if (mask[i]) pixels[i * 4] = pixels[i * 4 + 1] = pixels[i * 4 + 2] = 0;
-		if (art.width !== width || art.height !== height) { art.width = width; art.height = height; }
-		art.getContext('2d')?.putImageData(new ImageData(pixels, width, height), 0, 0);
+		if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+		canvas.getContext('2d')?.putImageData(new ImageData(pixels, width, height), 0, 0);
 	}
 	function schedulePaint() {
 		if (!paintFrame) paintFrame = requestAnimationFrame(paint);
@@ -99,10 +108,10 @@
 		for (let i = 0; i < pixels.width * pixels.height; i++) if (pixels.data[i * 4 + 3] < 128) (mask ??= new Uint8Array(pixels.width * pixels.height))[i] = 1;
 		return mask;
 	}
-	function thumbnail(): Promise<Blob | null> {
-		const side = Math.min(art.width, art.height), canvas = document.createElement('canvas');
+	function thumbnail(source = art): Promise<Blob | null> {
+		const side = Math.min(source.width, source.height), canvas = document.createElement('canvas');
 		canvas.width = canvas.height = 240;
-		canvas.getContext('2d')?.drawImage(art, (art.width - side) / 2, (art.height - side) / 2, side, side, 0, 0, 240, 240);
+		canvas.getContext('2d')?.drawImage(source, (source.width - side) / 2, (source.height - side) / 2, side, side, 0, 0, 240, 240);
 		return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .8));
 	}
 	async function archive(id: number, field: Float32Array, depthWidth: number, depthHeight: number) {
@@ -129,13 +138,62 @@
 			announcement = galleryItems.length ? `Galleri med ${galleryItems.length} djupnebilete.` : 'Galleriet er tomt.';
 		} catch { announcement = 'Galleriet er ikkje tilgjengeleg i denne nettlesaren.'; }
 	}
+	function stopUploads() {
+		if (!uploadActive && !uploadQueue.length) return;
+		uploadRun++; uploadQueue = []; uploadActive = false; uploading = 0;
+		estimator.dispose();
+	}
+	function queueUploads(files: File[]) {
+		if (!galleryOpen || !files.length) return;
+		uploadQueue.push(...files);
+		uploading = uploadQueue.length + (uploadActive ? 1 : 0);
+		if (!uploadActive) void runUploads(uploadRun);
+	}
+	async function runUploads(run: number) {
+		uploadActive = true;
+		let done = 0, failed = 0;
+		while (run === uploadRun && uploadQueue.length) {
+			const file = uploadQueue.shift() as File;
+			announcement = `Reknar djupn for opplasta bilete, ${uploading} att.`;
+			try { await developUpload(file, run); done++; } catch { failed++; }
+			if (run === uploadRun) uploading = uploadQueue.length;
+		}
+		if (run !== uploadRun) return;
+		uploadActive = false; uploading = 0;
+		// Free the model's memory after the whole batch, not between files.
+		estimator.dispose();
+		announcement = `${done} opplasta bilete lagt i galleriet.${failed ? ` ${failed} kunne ikkje lesast.` : ''}`;
+	}
+	async function developUpload(file: File, run: number) {
+		const decoded = await decodePhoto(file);
+		let pixels: Pixels;
+		try { pixels = pixelsFor(decoded.source, decoded.width, decoded.height, 1536); } finally { decoded.close(); }
+		if (run !== uploadRun) return;
+		const prediction = await estimateImageDepth(pixels, estimator, () => {}, () => run === uploadRun);
+		if (run !== uploadRun) return;
+		const field = normalizeDepth(prediction.depth), values = recipe();
+		const target = { width: pixels.width, height: pixels.height, mask: maskFor(pixels) }, canvas = document.createElement('canvas');
+		renderArt(canvas, prepareToneDepth(field, prediction.width, prediction.height), target, values);
+		const image = await thumbnail(canvas);
+		canvas.width = canvas.height = 1;
+		const id = await gallery.save({ ...target, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth: prediction.width, depthHeight: prediction.height, recipe: values }, image);
+		if (run !== uploadRun || !galleryOpen || !image) return;
+		galleryItems = [{ id, created: Date.now(), url: URL.createObjectURL(image) }, ...galleryItems];
+	}
+	function uploadToGallery(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const files = Array.from(input.files ?? []); input.value = '';
+		queueUploads(files);
+	}
 	function closeGallery() {
 		if (!galleryOpen) return;
+		stopUploads();
 		galleryOpen = false; releaseGallery();
 		if (mode === 'camera') void startCamera();
 	}
 	async function openItem(id: string) {
 		const opening = ++generation;
+		stopUploads();
 		try {
 			const item = await gallery.get(id);
 			if (!item || disposed || opening !== generation) return;
@@ -391,6 +449,11 @@
 		void captureFiles(files);
 	}
 	function pasteCapture(event: ClipboardEvent) {
+		if (galleryOpen) {
+			const files = Array.from(event.clipboardData?.files ?? []).filter(file => file.type.startsWith('image/'));
+			if (files.length) { event.preventDefault(); queueUploads(files); }
+			return;
+		}
 		if (mode !== 'camera') return;
 		const files = Array.from(event.clipboardData?.files ?? []).filter(file => file.type.startsWith('image/')).slice(0, 32);
 		if (!files.length) return;
@@ -400,7 +463,7 @@
 		generation++;
 		clearTapBatch();
 		recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera(); captured = null;
-		galleryOpen = false; releaseGallery();
+		stopUploads(); galleryOpen = false; releaseGallery();
 		captureJobId = '';
 		capturePointer = null;
 		progress = null; lastTap = null; mode = 'camera';
@@ -573,14 +636,19 @@
 	{/if}
 	{#if galleryOpen}
 		<div class="gallery" role="dialog" aria-modal="true" aria-label="Galleri">
+			<button class="gallery-upload" type="button" aria-label="Last opp bilete til galleriet. Fleire bilete kan veljast samstundes." onclick={() => uploadInput?.click()}><i class="plus" aria-hidden="true"></i></button>
 			<button class="gallery-close" type="button" aria-label="Lukk galleriet" onclick={closeGallery}><i class="plus close" aria-hidden="true"></i></button>
 			<div class="gallery-grid">
+				{#each { length: uploading }, index (index)}
+					<div class="pending" aria-hidden="true"><div class="progress indeterminate"><i style:width="28%"></i></div></div>
+				{/each}
 				{#each galleryItems as item (item.id)}
 					<button type="button" aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}`} onclick={() => openItem(item.id)}><img src={item.url} alt="" /></button>
 				{/each}
 			</div>
 		</div>
 	{/if}
+	<input bind:this={uploadInput} type="file" accept="image/*" multiple onchange={uploadToGallery} tabindex="-1" aria-label="Bilete til galleriet" />
 	<input bind:this={photoInput} type="file" accept="image/*" multiple onchange={capture} oncancel={() => void startCamera()} tabindex="-1" aria-label="Kamerabilete" />
 	<input class="sr-only" type="range" min="0" max="4" step="1" value={preset} aria-label="Djupneuttrykk" aria-valuetext={VATHOGRAPHY_PRESETS[preset].label} oninput={event => selectPreset(Number(event.currentTarget.value))} />
 	<input class="sr-only" type="range" min="-1" max="1" step="0.02" value={position} aria-label="Djupneområde" oninput={event => setPosition(Number(event.currentTarget.value))} />

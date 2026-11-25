@@ -15,7 +15,8 @@ import { memoryIndexedDB } from './helpers/indexeddb.mjs';
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
 export const harness = {
-  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys,
+  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys, uploadToGallery,
+  get uploading(){ return uploading; },
   get galleryOpen(){ return galleryOpen; }, get galleryItems(){ return galleryItems; }, get currentId(){ return currentId; },
   get mode(){ return mode; }, get printer(){ return printer; }, get announcement(){ return announcement; },
   get preset(){ return preset; }, get position(){ return position; }, get bandWidth(){ return bandWidth; }, get draft(){ return captured; },
@@ -85,6 +86,8 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   const exports = {};
   vm.runInNewContext(compiled, { exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
     $state: value => value, navigator: { mediaDevices: { getUserMedia: async () => { cameraRequests++; return stream; } } }, document, window,
+    createImageBitmap: async file => { if (file.name === 'broken.heic') throw new Error('unsupported'); return { width: 8, height: 6, close(){} }; },
+    Image: class { decode(){ return Promise.reject(new Error('undecodable')); } },
     setTimeout, clearTimeout, requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout,
     performance: {now: () => pointerTime}, console: {...console, warn(){}}, URL, Blob, crypto, ArrayBuffer, Uint8Array, Uint8ClampedArray, Float32Array, DOMException, AbortController,
     ImageData: class { constructor(data, width, height){ Object.assign(this, { data, width, height }); } },
@@ -319,4 +322,42 @@ test('without local storage the camera still develops and prints, and the galler
   await camera.harness.openGallery();
   assert.match(camera.harness.announcement, /ikkje tilgjengeleg/);
   camera.harness.closeGallery(); assert.equal(camera.harness.mode, 'done');
+});
+
+const files = (...names) => ({ currentTarget: { files: names.map(name => new File(['x'], name, { type: 'image/jpeg' })), value: 'x' } });
+
+test('several photos uploaded in the gallery each become their own depth image in the grid', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  await camera.harness.openGallery();
+  camera.harness.uploadToGallery(files('a.jpg', 'b.jpg', 'c.jpg'));
+  assert.equal(camera.harness.uploading, 3);
+  await waitFor(() => camera.harness.uploading === 0 && camera.harness.galleryItems.length === 3);
+  assert.equal(camera.estimates(), 3); assert.equal(camera.stitchedFrames(), 0);
+  assert.equal(camera.harness.mode, 'camera'); assert.equal(camera.paints.length, 0);
+  assert.match(camera.harness.announcement, /3 opplasta bilete/);
+  await camera.harness.openItem(camera.harness.galleryItems[2].id);
+  assert.equal(camera.harness.mode, 'done'); assert.equal(camera.estimates(), 3);
+});
+
+test('an unreadable upload is skipped and reported while the rest are kept', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  await camera.harness.openGallery();
+  camera.harness.uploadToGallery(files('a.jpg', 'broken.heic', 'c.jpg'));
+  await waitFor(() => camera.harness.uploading === 0 && camera.harness.galleryItems.length === 2);
+  assert.match(camera.harness.announcement, /2 opplasta bilete.*1 kunne ikkje lesast/);
+});
+
+test('closing the gallery stops the remaining uploads without saving a late result', async t => {
+  let resolve;
+  const depthGate = new Promise(done => { resolve = done; });
+  const database = memoryIndexedDB();
+  const camera = fixture(false, { depthGate, database }); t.after(camera.cleanup);
+  await camera.harness.openGallery();
+  camera.harness.uploadToGallery(files('a.jpg', 'b.jpg'));
+  await new Promise(done => setTimeout(done, 10));
+  camera.harness.closeGallery(); assert.equal(camera.harness.uploading, 0);
+  resolve(); await new Promise(done => setTimeout(done, 20));
+  assert.ok(camera.estimates() <= 1);
+  await camera.harness.openGallery(); await new Promise(done => setTimeout(done, 10));
+  assert.equal(camera.harness.galleryItems.length, 0);
 });
