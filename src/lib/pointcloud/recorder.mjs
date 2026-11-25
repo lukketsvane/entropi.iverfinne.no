@@ -11,11 +11,11 @@ export class FrameRecorder {
   now() { return this.options.now?.() ?? performance.now(); }
   begin() {
     if(this.active)return;
-    this.active=true;this.frames=[];this.started=this.now();
+    this.active=true;this.held=false;this.frames=[];this.started=this.now();
     this.sample();
     this.timer=setTimeout(()=>{
       if(!this.active)return;
-      this.options.onHold();
+      this.held=true;this.options.onHold();
       const loop=()=>{if(!this.active)return;this.sample();this.timer=setTimeout(loop,this.options.interval??250);};
       loop();
     },this.options.delay??320);
@@ -28,7 +28,7 @@ export class FrameRecorder {
   end() {
     if(!this.active)return;
     this.active=false;clearTimeout(this.timer);
-    if(this.now()-this.started>=(this.options.delay??320))this.sample();
+    if(this.held||this.now()-this.started>=(this.options.delay??320))this.sample();
     const frames=this.frames;this.frames=[];
     this.options.finish(frames);
   }
