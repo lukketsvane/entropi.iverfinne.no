@@ -43,7 +43,8 @@ function configure(ort) {
 // The larger model at higher resolution, where the browser offers WebGPU.
 async function gpuEngine(manifest, id, cache) {
   const spec = manifest.webgpu;
-  if (!spec || !(await self.navigator?.gpu?.requestAdapter?.().catch(() => null))) return null;
+  // Off until it is measured on phones: B on WebGPU crashed an iPhone 16e.
+  if (!spec || spec.enabled !== true || !(await self.navigator?.gpu?.requestAdapter?.().catch(() => null))) return null;
   const ort = await import('./vendor/ort.webgpu.min.mjs');
   configure(ort);
   const [runtime, graph, ...parts] = await loadAll([spec.runtime, spec.graph, ...spec.data], id, 'loading-model', cache);

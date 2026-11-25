@@ -575,3 +575,20 @@ test('a reopened gallery image keeps its colour look and photo structure', async
   await camera.harness.openGallery(); await camera.harness.openItem(camera.harness.galleryItems[0].id);
   assert.equal(camera.harness.look, 2); assert.equal(camera.harness.structure, kept);
 });
+
+test('an upload that keeps crashing the page is dropped after three starts instead of looping on every reload', async t => {
+  const database = memoryIndexedDB();
+  const { createGallery: open } = await import('../src/lib/gallery.mjs');
+  const store = open(database);
+  await store.enqueue([new File(['x'], 'crashes.jpg')]);
+  for (let crash = 0; crash < 3; crash++) { const [job] = await store.pending(); if (job) await store.retry(job); }
+  const camera = fixture(false, { database }); t.after(camera.cleanup);
+  await waitFor(() => camera.harness.uploading === 0 && /kunne ikkje lesast/.test(camera.harness.announcement));
+  assert.equal(camera.estimates(), 0); assert.equal((await store.pending()).length, 0);
+});
+
+test('the WebGPU model stays off unless the manifest enables it', async () => {
+  const manifest = JSON.parse(fs.readFileSync('static/pointcloud/models/manifest.json', 'utf8'));
+  assert.equal(manifest.webgpu.enabled, false);
+  assert.match(fs.readFileSync('static/pointcloud/depth-worker.mjs', 'utf8'), /spec\.enabled !== true/);
+});

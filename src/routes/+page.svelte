@@ -240,15 +240,17 @@
 				uploading = jobs.length;
 				const job = jobs[0];
 				if (!job) break;
+				// Count the attempt before starting, so a file that crashes the page is not retried forever after reloads.
+				if (job.attempts >= 2) { await gallery.drop(job.id); failed++; continue; }
+				await gallery.retry(job);
 				try {
 					const added = await developUpload(job);
 					done++;
 					if (added && galleryOpen) galleryItems = [added, ...galleryItems];
 				} catch (error) {
 					if (disposed) break;
-					// Unreadable files are dropped at once; a model failure gets two more attempts.
-					if ((error as Error)?.name === 'DecodeError' || job.attempts >= 2) { await gallery.drop(job.id); failed++; }
-					else await gallery.retry(job);
+					// Unreadable files are dropped at once; a model failure is tried again up to three times in all.
+					if ((error as Error)?.name === 'DecodeError') { await gallery.drop(job.id); failed++; }
 				}
 			}
 		} catch { /* Storage is unavailable; queued files stay for the next start. */ }
