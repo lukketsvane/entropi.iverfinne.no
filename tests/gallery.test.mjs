@@ -35,3 +35,11 @@ test('a changed expression updates the stored recipe and thumbnail without touch
 test('a browser without IndexedDB reports that the gallery is unavailable', async () => {
   await assert.rejects(createGallery(undefined).list(), /Lokal lagring/);
 });
+
+test('a deleted image leaves both the grid index and its depth', async () => {
+  const gallery = createGallery(memoryIndexedDB());
+  const kept = await gallery.save(item(0), new Blob(['kept'])), removed = await gallery.save(item(1), new Blob(['removed']));
+  await gallery.remove(removed);
+  assert.deepEqual((await gallery.list()).map(entry => entry.id), [kept]);
+  assert.equal(await gallery.get(removed), undefined); assert.ok(await gallery.get(kept));
+});

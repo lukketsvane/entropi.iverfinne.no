@@ -69,6 +69,14 @@ export function createGallery(factory = globalThis.indexedDB) {
     async get(id) {
       const db = await connect();
       return transact(db, ['items'], 'readonly', transaction => transaction.objectStore('items').get(id));
+    },
+    /** @param {string} id */
+    async remove(id) {
+      const db = await connect();
+      await transact(db, ['index', 'items'], 'readwrite', transaction => {
+        transaction.objectStore('items').delete(id);
+        transaction.objectStore('index').delete(id);
+      });
     }
   };
 }

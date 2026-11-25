@@ -15,7 +15,8 @@ import { memoryIndexedDB } from './helpers/indexeddb.mjs';
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
 export const harness = {
-  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys, uploadToGallery,
+  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys, uploadToGallery, tileDown, tileMove, cancelPress, tileClick, saveSheet, shareSheet, deleteSheet,
+  get sheet(){ return sheet; },
   get uploading(){ return uploading; },
   get galleryOpen(){ return galleryOpen; }, get galleryItems(){ return galleryItems; }, get currentId(){ return currentId; },
   get mode(){ return mode; }, get printer(){ return printer; }, get announcement(){ return announcement; },
@@ -27,7 +28,8 @@ const waitFor = async predicate => {
   while (!predicate()) { if (Date.now() > until) throw new Error('Timed out'); await new Promise(resolve => setTimeout(resolve, 2)); }
 };
 
-function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, depthError = null, changingFrames = false, storage = null, database = memoryIndexedDB() } = {}) {
+function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, depthError = null, changingFrames = false, storage = null, database = memoryIndexedDB(), share = null } = {}) {
+  const downloads = [], shared = [];
   const writes = [], requested = [], paints = [], paper = buildPrintJob(new Uint8Array(WIDTH * 2));
   const device = new EventTarget(); device.name = PRINTER_NAME; device.id = 'px10';
   const notifier = new EventTarget(); notifier.startNotifications = async () => notifier;
@@ -46,7 +48,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   const video = { readyState: 2, videoWidth: 4, videoHeight: 4, srcObject: null, play: async () => {} };
   const art = { width: 1, height: 1, clientWidth: 100, getContext: () => ({ putImageData(image){ paints.push(image); } }) };
   const document = Object.assign(new EventTarget(), {
-    hidden: false, visibilityState: 'visible', createElement: () => ({ width: 4, height: 4, toBlob: callback => callback(new Blob(['thumbnail'])), getContext: () => ({
+    hidden: false, visibilityState: 'visible', createElement: () => ({ width: 4, height: 4, click(){ downloads.push(this); }, toBlob: callback => callback(new Blob(['thumbnail'])), getContext: () => ({
       fillRect(){}, drawImage(){}, putImageData(){}, getImageData: () => ({ width: 4, height: 4, data: new Uint8ClampedArray(64).fill(changingFrames ? 100 + (++samples) * 10 : 180) })
     }) })
   });
@@ -85,7 +87,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   };
   const exports = {};
   vm.runInNewContext(compiled, { exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
-    $state: value => value, navigator: { mediaDevices: { getUserMedia: async () => { cameraRequests++; return stream; } } }, document, window,
+    $state: value => value, navigator: { mediaDevices: { getUserMedia: async () => { cameraRequests++; return stream; } }, ...(share ? { share: async data => { shared.push(data); }, canShare: share } : {}) }, document, window, File,
     createImageBitmap: async file => { if (file.name === 'broken.heic') throw new Error('unsupported'); return { width: 8, height: 6, close(){} }; },
     Image: class { decode(){ return Promise.reject(new Error('undecodable')); } },
     setTimeout, clearTimeout, requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout,
@@ -108,7 +110,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     }
   };
   const point = (pointerId, clientX, clientY = 200, isPrimary = pointerId === 1) => ({ pointerId, clientX, clientY, isPrimary });
-  return { harness: exports.harness, tap, requested, writes, paper, paints, art, slider: edge => sliders.get(edge),
+  return { harness: exports.harness, tap, downloads, shared, requested, writes, paper, paints, art, slider: edge => sliders.get(edge),
     enableBluetooth: () => { api = bluetooth; }, advancePointer: ms => { pointerTime += ms; }, point,
     holdResult: (move = 0) => {
       exports.harness.artDown(point(1, 100));
@@ -360,4 +362,63 @@ test('closing the gallery stops the remaining uploads without saving a late resu
   assert.ok(camera.estimates() <= 1);
   await camera.harness.openGallery(); await new Promise(done => setTimeout(done, 10));
   assert.equal(camera.harness.galleryItems.length, 0);
+});
+
+async function galleryWithImage(options) {
+  const camera = fixture(false, options);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.harness.currentId);
+  await camera.harness.openGallery();
+  return camera;
+}
+const tile = (camera, index = 0) => camera.harness.galleryItems[index];
+const longPress = async (camera, item = tile(camera)) => {
+  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 7, clientX: 50, clientY: 50 }, item);
+  await waitFor(() => camera.harness.sheet?.file);
+};
+
+test('holding a gallery tile prepares the full image and shares it without opening the tile', async t => {
+  const camera = await galleryWithImage({ share: () => true }); t.after(camera.cleanup);
+  const item = tile(camera);
+  await longPress(camera, item);
+  assert.equal(camera.harness.sheet.id, item.id); assert.equal(camera.harness.sheet.file.type, 'image/png');
+  camera.harness.tileClick(item.id); assert.equal(camera.harness.galleryOpen, true, 'The click after a hold does not open the tile');
+  camera.harness.shareSheet();
+  assert.equal(camera.shared.length, 1); assert.equal(camera.shared[0].files[0].name, `entropi-djupn-${item.id}.png`);
+  assert.equal(camera.harness.sheet, null);
+  await longPress(camera, item); camera.harness.saveSheet();
+  assert.equal(camera.shared.length, 2, 'Saving to Photos on iOS goes through the share sheet'); assert.equal(camera.downloads.length, 0);
+  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 8, clientX: 50, clientY: 50 }, item);
+  camera.harness.cancelPress(); camera.harness.tileClick(item.id);
+  await waitFor(() => !camera.harness.galleryOpen);
+});
+
+test('without file sharing, saving downloads the PNG', async t => {
+  const camera = await galleryWithImage(); t.after(camera.cleanup);
+  await longPress(camera);
+  camera.harness.shareSheet(); assert.ok(camera.harness.sheet, 'Share is unavailable and does nothing');
+  camera.harness.saveSheet();
+  assert.equal(camera.downloads.length, 1); assert.match(camera.downloads[0].download, /^entropi-djupn-.*\.png$/);
+});
+
+test('deleting a tile needs a second tap and removes it from the grid and storage', async t => {
+  const database = memoryIndexedDB();
+  const camera = await galleryWithImage({ database }); t.after(camera.cleanup);
+  await longPress(camera);
+  await camera.harness.deleteSheet();
+  assert.equal(camera.harness.sheet.armed, true); assert.equal(camera.harness.galleryItems.length, 1);
+  await camera.harness.deleteSheet();
+  assert.equal(camera.harness.sheet, null); assert.equal(camera.harness.galleryItems.length, 0);
+  assert.match(camera.harness.announcement, /sletta/);
+  const next = fixture(false, { database }); t.after(next.cleanup);
+  await next.harness.openGallery(); assert.equal(next.harness.galleryItems.length, 0);
+});
+
+test('scrolling the grid cancels a hold, and a short tap still opens the image', async t => {
+  const camera = await galleryWithImage(); t.after(camera.cleanup);
+  const item = tile(camera);
+  camera.harness.tileDown({ isPrimary: true, pointerType: 'touch', pointerId: 7, clientX: 50, clientY: 50 }, item);
+  camera.harness.tileMove({ pointerId: 7, clientX: 50, clientY: 80 });
+  await new Promise(done => setTimeout(done, 600));
+  assert.equal(camera.harness.sheet, null);
+  camera.harness.cancelPress(); camera.harness.tileClick(item.id); await waitFor(() => camera.harness.mode === 'done' && !camera.harness.galleryOpen);
 });

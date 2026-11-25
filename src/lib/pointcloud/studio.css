@@ -52,3 +52,11 @@
 .studio .gallery-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;align-content:start;flex:1 1 0;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:contain;touch-action:pan-y;padding-bottom:8px}
 .studio .gallery-grid button {position:relative;display:block;width:100%;aspect-ratio:1;min-width:0;padding:0;border:0;background:#111;overflow:hidden;touch-action:pan-y}
 .studio .gallery-grid img {position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;-webkit-user-drag:none}
+.studio .gallery-grid button {-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+.studio .sheet {position:absolute;inset:0;z-index:11;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;background:#000d;padding:24px}
+.studio .sheet img {width:min(60vw,240px);aspect-ratio:1;object-fit:cover;pointer-events:none}
+.studio .sheet-actions {display:flex;gap:28px}
+.studio .sheet-actions button {width:48px;height:48px;display:grid;place-items:center;padding:0;border:0;background:transparent;color:#fff;opacity:.75}
+.studio .sheet-actions button:disabled {opacity:.25}
+.studio .sheet-actions button.armed {color:#ff5a4f;opacity:1}
+.studio .sheet-actions svg {width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}

@@ -22,6 +22,7 @@ export function memoryIndexedDB() {
           return {
             put: value => request(() => { store.rows.set(value[store.keyPath], structuredClone(value)); return value[store.keyPath]; }),
             get: key => request(() => structuredClone(store.rows.get(key))),
+            delete: key => request(() => { store.rows.delete(key); }),
             getAll: () => request(() => [...store.rows.values()].map(value => structuredClone(value)))
           };
         }

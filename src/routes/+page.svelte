@@ -49,6 +49,11 @@
 	let currentId: string | null = null;
 	let saveTimer: ReturnType<typeof setTimeout> | undefined;
 	let uploading = $state(0);
+	let sheet = $state<{ id: string; url: string; file: File | null; armed: boolean } | null>(null);
+	let press: { id: string; pointerId: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
+	let pressed = false;
+	let disarmTimer: ReturnType<typeof setTimeout> | undefined;
+	const canShareFiles = (file: File) => typeof navigator.share === 'function' && !!navigator.canShare?.({ files: [file] });
 	let uploadQueue: File[] = [];
 	let uploadRun = 0;
 	let uploadActive = false;
@@ -185,8 +190,83 @@
 		const files = Array.from(input.files ?? []); input.value = '';
 		queueUploads(files);
 	}
+	function tileDown(event: PointerEvent, item: { id: string; url: string }) {
+		cancelPress();
+		if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+		pressed = false;
+		press = { id: item.id, pointerId: event.pointerId, x: event.clientX, y: event.clientY, timer: setTimeout(() => {
+			press = null; pressed = true; void openSheet(item);
+		}, 500) };
+	}
+	function tileMove(event: PointerEvent) {
+		if (press?.pointerId === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 10) cancelPress();
+	}
+	function cancelPress() {
+		if (press) clearTimeout(press.timer);
+		press = null;
+	}
+	function tileClick(id: string) {
+		if (pressed) { pressed = false; return; }
+		void openItem(id);
+	}
+	async function openSheet(item: { id: string; url: string }) {
+		clearTimeout(disarmTimer);
+		sheet = { id: item.id, url: item.url, file: null, armed: false };
+		try {
+			const record = await gallery.get(item.id);
+			if (!record || sheet?.id !== item.id) return;
+			const canvas = document.createElement('canvas');
+			renderArt(canvas, prepareToneDepth(Float32Array.from(record.depth, value => value / 65535), record.depthWidth, record.depthHeight),
+				{ width: record.width, height: record.height, mask: record.mask ?? null }, record.recipe);
+			const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+			canvas.width = canvas.height = 1;
+			if (blob && sheet?.id === item.id) sheet = { ...sheet, file: new File([blob], `entropi-djupn-${item.id}.png`, { type: 'image/png' }) };
+		} catch { announcement = 'Kunne ikkje klargjere biletet.'; }
+	}
+	function closeSheet() {
+		clearTimeout(disarmTimer); sheet = null;
+	}
+	function download(file: File) {
+		const url = URL.createObjectURL(file), link = document.createElement('a');
+		link.href = url; link.download = file.name; link.click();
+		setTimeout(() => URL.revokeObjectURL(url), 10000);
+	}
+	function saveSheet() {
+		const file = sheet?.file;
+		if (!file) return;
+		// iOS only saves to Photos through the share sheet's own Save Image action.
+		if (canShareFiles(file)) void navigator.share({ files: [file] }).catch(() => {});
+		else download(file);
+		closeSheet();
+	}
+	function shareSheet() {
+		const file = sheet?.file;
+		if (!file || !canShareFiles(file)) return;
+		void navigator.share({ files: [file] }).catch(() => {});
+		closeSheet();
+	}
+	async function deleteSheet() {
+		const current = sheet;
+		if (!current) return;
+		if (!current.armed) {
+			sheet = { ...current, armed: true };
+			announcement = 'Trykk på slett ein gong til for å slette biletet.';
+			disarmTimer = setTimeout(() => { if (sheet?.id === current.id) sheet = { ...sheet, armed: false }; }, 3000);
+			return;
+		}
+		closeSheet();
+		try {
+			await gallery.remove(current.id);
+			const removed = galleryItems.find(item => item.id === current.id);
+			if (removed) URL.revokeObjectURL(removed.url);
+			galleryItems = galleryItems.filter(item => item.id !== current.id);
+			if (currentId === current.id) { clearTimeout(saveTimer); saveTimer = undefined; currentId = null; }
+			announcement = 'Biletet er sletta.';
+		} catch { announcement = 'Kunne ikkje slette biletet.'; }
+	}
 	function closeGallery() {
 		if (!galleryOpen) return;
+		cancelPress(); closeSheet();
 		stopUploads();
 		galleryOpen = false; releaseGallery();
 		if (mode === 'camera') void startCamera();
@@ -531,7 +611,7 @@
 	}
 	function keys(event: KeyboardEvent) {
 		if (event.key !== 'Escape') return;
-		if (galleryOpen) closeGallery(); else void retake();
+		if (sheet) closeSheet(); else if (galleryOpen) closeGallery(); else void retake();
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
@@ -643,9 +723,29 @@
 					<div class="pending" aria-hidden="true"><div class="progress indeterminate"><i style:width="28%"></i></div></div>
 				{/each}
 				{#each galleryItems as item (item.id)}
-					<button type="button" aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}`} onclick={() => openItem(item.id)}><img src={item.url} alt="" /></button>
+					<button type="button" aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}. Hald inne for å lagre, dele eller slette.`}
+						onpointerdown={event => tileDown(event, item)} onpointermove={tileMove} onpointerup={cancelPress} onpointercancel={cancelPress}
+						oncontextmenu={event => event.preventDefault()} onclick={() => tileClick(item.id)}><img src={item.url} alt="" /></button>
 				{/each}
 			</div>
+			{#if sheet}
+				<div class="sheet" role="presentation" onclick={event => { if (event.target === event.currentTarget) closeSheet(); }}>
+					<img src={sheet.url} alt="" />
+					<div class="sheet-actions" role="group" aria-label="Handlingar for biletet">
+						<button type="button" aria-label="Lagre i bilete" disabled={!sheet.file} onclick={saveSheet}>
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" /></svg>
+						</button>
+						{#if sheet.file && canShareFiles(sheet.file)}
+							<button type="button" aria-label="Del biletet" onclick={shareSheet}>
+								<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M8 8l4-4 4 4M7 11H5v9h14v-9h-2" /></svg>
+							</button>
+						{/if}
+						<button type="button" class:armed={sheet.armed} aria-label={sheet.armed ? 'Stadfest sletting' : 'Slett biletet'} onclick={deleteSheet}>
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6" /></svg>
+						</button>
+					</div>
+				</div>
+			{/if}
 		</div>
 	{/if}
 	<input bind:this={uploadInput} type="file" accept="image/*" multiple onchange={uploadToGallery} tabindex="-1" aria-label="Bilete til galleriet" />
