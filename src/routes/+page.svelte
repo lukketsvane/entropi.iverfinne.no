@@ -557,6 +557,8 @@
 		}
 	});
 	function beginCapture(event: PointerEvent) {
+		// A second finger turns the torch on or off instead of taking a picture.
+		if (!event.isPrimary && event.pointerType === 'touch' && mode === 'camera') { event.preventDefault(); recorder.abort(); suppressCaptureClick = true; void toggleTorch(); return; }
 		if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0) || mode !== 'camera') return;
 		if (printer?.choosing) return;
 		if (choosePrinter() || shake?.requestFromGesture()) { event.preventDefault(); suppressCaptureClick = true; return; }
@@ -973,7 +975,7 @@
 		{/if}
 	</div>
 	{#if mode === 'camera' || mode === 'recording'}
-		<button class="capture-plane" type="button" aria-label="Trykk for eit djupnebilete og utskrift. Hald inne for panorama. Dra ein finger langs høgre kant for fem djupneuttrykk. Rist for å tømme lerretet. Dei første trykka gir systemløyve når det trengst."
+		<button class="capture-plane" type="button" aria-label="Trykk for eit djupnebilete og utskrift. Hald inne for panorama. Dra ein finger langs høgre kant for fem djupneuttrykk. Rist for å tømme lerretet. Trykk med to fingrar for å slå lommelykta av og på. Dei første trykka gir systemløyve når det trengst."
 			onpointerdown={beginCapture} onpointerup={endCapture} onpointercancel={cancelCapture} onlostpointercapture={cancelCapture} oncontextmenu={event => event.preventDefault()} onclick={captureClick}></button>
 		<button class="access-control" type="button" aria-label="Vel bilete frå telefonen" onclick={openCapture}><i class="plus" aria-hidden="true"></i></button>
 	{:else if mode === 'working'}
@@ -998,9 +1000,6 @@
 	{/if}
 	{#if (mode === 'camera' || mode === 'done') && !galleryOpen}
 		<button class="access-control gallery-control" type="button" aria-label="Opne galleriet" onclick={openGallery}><i class="grid-mark" aria-hidden="true"></i></button>
-	{/if}
-	{#if mode === 'camera' && !galleryOpen}
-		<button class="access-control torch-control" class:on={torch} type="button" aria-pressed={torch} aria-label={torch ? 'Slå av lommelykta' : 'Slå på lommelykta'} onclick={toggleTorch}><i class="torch-mark" aria-hidden="true"></i></button>
 	{/if}
 	{#if galleryOpen}
 		<div class="gallery" role="dialog" aria-modal="true" aria-label="Galleri">

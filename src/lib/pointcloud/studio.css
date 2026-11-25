@@ -44,10 +44,6 @@
 @media(prefers-reduced-motion:reduce){.studio .record-light,.studio .progress.indeterminate i{animation:none}}
 .studio .art canvas {object-fit:contain}
 .studio .access-control.gallery-control {bottom:auto;top:calc(12px + env(safe-area-inset-top));left:calc(12px + env(safe-area-inset-left));z-index:7;background:transparent;opacity:.6;pointer-events:auto}
-.studio .access-control.torch-control {bottom:auto;left:auto;top:calc(12px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right));z-index:7;background:transparent;opacity:.6;pointer-events:auto}
-.studio .access-control.torch-control.on {opacity:1}
-.studio .torch-mark {width:12px;height:12px;display:block;border:1px solid #fff;border-radius:50%}
-.studio .torch-control.on .torch-mark {background:#fff;box-shadow:0 0 10px 2px #fff8}
 .studio .grid-mark {width:14px;height:14px;display:block;background:linear-gradient(#fff,#fff) 0 0/6px 6px no-repeat,linear-gradient(#fff,#fff) 8px 0/6px 6px no-repeat,linear-gradient(#fff,#fff) 0 8px/6px 6px no-repeat,linear-gradient(#fff,#fff) 8px 8px/6px 6px no-repeat}
 .studio .gallery {position:absolute;inset:0;z-index:10;display:flex;flex-direction:column;background:#000;padding:calc(56px + env(safe-area-inset-top)) calc(4px + env(safe-area-inset-right)) env(safe-area-inset-bottom) calc(4px + env(safe-area-inset-left))}
 .studio .gallery-upload {position:absolute;top:calc(12px + env(safe-area-inset-top));left:calc(12px + env(safe-area-inset-left));width:44px;height:44px;display:grid;place-items:center;padding:0;border:0;background:transparent;opacity:.7}
