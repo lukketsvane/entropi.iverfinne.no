@@ -116,6 +116,20 @@
 		}
 	}
 
+	let torch = $state(false);
+	async function applyTorch() {
+		const track = stream?.getVideoTracks()[0];
+		if (!track) return true;
+		const capabilities = (track.getCapabilities?.() ?? {}) as { torch?: boolean };
+		if (!capabilities.torch) return !torch;
+		try { await track.applyConstraints({ advanced: [{ torch } as MediaTrackConstraintSet] }); return true; } catch { return false; }
+	}
+	async function toggleTorch() {
+		torch = !torch;
+		try { window.localStorage?.setItem('entropi-torch', torch ? '1' : ''); } catch {}
+		if (!(await applyTorch()) && torch) { torch = false; announcement = 'Lommelykta er ikkje tilgjengeleg i denne nettlesaren.'; }
+		else announcement = torch ? 'Lommelykta er på.' : 'Lommelykta er av.';
+	}
 	function stopCamera() {
 		cameraAttempt++;
 		stream?.getTracks().forEach(track => track.stop());
@@ -486,6 +500,7 @@
 			}
 			stream = next; video.srcObject = next;
 			await video.play().catch(() => {});
+			if (torch) void applyTorch();
 			if (preview) { preview.source = video; preview.active = true; }
 		} catch {
 			announcement = 'Trykk i søkjaren for å bruke kameraet eller velje bilete.';
@@ -598,7 +613,8 @@
 		try {
 			clearResult(); progress = null; mode = 'working';
 			captureJobId = `${printSession}:${id}`;
-			showPixels(frames[0]); stopCamera();
+			// The torch stays lit through the capture, so the camera keeps running while it is on.
+			showPixels(frames[0]); if (!torch) stopCamera();
 			captured = { ...captureSnapshot(frames[0]), data: new Uint8ClampedArray(frames[0].data) };
 			if (frames.length > 1) {
 				announcement = 'Set saman panorama.';
@@ -874,6 +890,7 @@
 			if (saved && /^[0-4]$/.test(saved)) preset = Number(saved);
 			const savedLook = Number(window.localStorage?.getItem('entropi-look'));
 			if (Number.isInteger(savedLook) && savedLook >= 0 && savedLook < LOOKS.length) look = savedLook;
+			torch = window.localStorage?.getItem('entropi-torch') === '1';
 		} catch {}
 		lookSlider = attachEdgeQualitySlider(window, {edge: 'left', levels: LOOKS.length, initialLevel: look, onLevel: selectLook,
 			onActive: active => { lookActive = active; }});
@@ -981,6 +998,9 @@
 	{/if}
 	{#if (mode === 'camera' || mode === 'done') && !galleryOpen}
 		<button class="access-control gallery-control" type="button" aria-label="Opne galleriet" onclick={openGallery}><i class="grid-mark" aria-hidden="true"></i></button>
+	{/if}
+	{#if mode === 'camera' && !galleryOpen}
+		<button class="access-control torch-control" class:on={torch} type="button" aria-pressed={torch} aria-label={torch ? 'Slå av lommelykta' : 'Slå på lommelykta'} onclick={toggleTorch}><i class="torch-mark" aria-hidden="true"></i></button>
 	{/if}
 	{#if galleryOpen}
 		<div class="gallery" role="dialog" aria-modal="true" aria-label="Galleri">
