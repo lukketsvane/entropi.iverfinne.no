@@ -2,61 +2,45 @@
 	import { onMount, tick } from 'svelte';
 	import { updated } from '$app/state';
 	import { DepthEstimator } from '../lib/pointcloud/estimator.mjs';
-	import { createPointCloudViewer } from '../lib/pointcloud/viewer.mjs';
-	import { reconstructionFrames, reconstructGaussian } from '../lib/pointcloud/reconstruct.mjs';
-	import { createGaussianViewer } from '../lib/pointcloud/gaussian-viewer.mjs';
-	import { attachEdgeQualitySlider, type QualityLevel } from '../lib/pointcloud/edge-quality-slider';
-	import { PRIMITIVE_MODES, type PrimitiveLevel } from '../lib/pointcloud/primitive-style.ts';
+	import { attachEdgeQualitySlider } from '../lib/pointcloud/edge-quality-slider';
 	import { Viewfinder } from '../lib/pointcloud/viewfinder.mjs';
 	import { FrameRecorder } from '../lib/pointcloud/recorder.mjs';
 	import { ShakeToClear } from '../lib/pointcloud/shake.mjs';
-	import { HeadTracker } from '../lib/pointcloud/head-tracker';
 	import { PX10Printer } from '../lib/print/printer.mjs';
-	import { cloudPrintJob } from '../lib/print/cloud-raster.mjs';
-	import { imageToPointCloud, pointCloudPLY, pointStride } from '../../static/pointcloud/math.mjs';
+	import { artPrintJob } from '../lib/print/cloud-raster.mjs';
+	import { normalizeDepth, prepareToneDepth, VATHOGRAPHY_PRESETS } from '../lib/vathography.mjs';
 	import { estimateImageDepth } from '../../static/pointcloud/tiles.mjs';
 	import { captureSnapshot } from '../../static/pointcloud/panorama.mjs';
 	import '../lib/pointcloud/studio.css';
 
 	type Pixels = { data: Uint8ClampedArray; width: number; height: number };
-	type Capture = Pixels & { inputFrames?: number; registeredFrames?: number; focalEstimate?: number; horizontal?: boolean };
 	let video: HTMLVideoElement;
 	let finder: HTMLCanvasElement;
 	let photoInput: HTMLInputElement;
-	let cloudHost: HTMLDivElement;
+	let art: HTMLCanvasElement;
 	let stream: MediaStream | null = null;
 	let preview: Viewfinder | null = null;
-	let viewer: ReturnType<typeof createPointCloudViewer> | Awaited<ReturnType<typeof createGaussianViewer>> | null = null;
-	let tracker: HeadTracker | null = null;
 	let printer: PX10Printer | null = null;
 	let shake: ShakeToClear | null = null;
+	let presetSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
 	let printSession = '';
 	let captureJobId = '';
 	let manualPrint = 0;
-	let reconstruction: AbortController | null = null;
-	let capturedFrames: Pixels[] = [];
-	let qualityLevel = $state<QualityLevel>(2);
-	let qualityActive = $state(false);
-	let qualitySlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
-	let primitiveLevel = $state<PrimitiveLevel>(0);
-	let primitiveActive = $state(false);
-	let primitiveSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
-	const qualityDensity = [0, .4, .7, 1];
-	const qualityLabel = ['Lokal djupne på eininga.', 'Shadow med låg detalj.', 'Shadow med normal detalj.', 'Shadow med høg detalj.'];
 	let pendingTaps: Pixels[] = [];
 	let tapTimer: ReturnType<typeof setTimeout> | undefined;
-	let fallbackFrames: Pixels[] | null = null;
 	let suppressCaptureClick = false;
 	let printerAnnouncement = $state('');
-	let trackingFailed = false;
 	const estimator = new DepthEstimator();
 	let mode = $state<'camera' | 'recording' | 'working' | 'done' | 'error'>('camera');
-	let viewerReady = $state(false);
-	let announcement = $state('Trykk for eitt bilete. Hald inne medan du panorerer, og slepp for å lage ei punktsky.');
+	let preset = $state(1);
+	let presetActive = $state(false);
+	let position = $state(0);
+	let bandWidth = 1;
+	let announcement = $state('Trykk for eit djupnebilete. Hald inne medan du panorerer, og slepp for eit panorama.');
 	let progress = $state<number | null>(null);
-	let plyUrl = $state('');
-	let downloadName = $state('entropi-punktsky.ply');
-	let captured: Capture | null = null;
+	let captured: Pixels | null = null;
+	let tone: ReturnType<typeof prepareToneDepth> | null = null;
+	let paintFrame = 0;
 	let disposed = false;
 	let generation = 0;
 	let cameraAttempt = 0;
@@ -65,7 +49,9 @@
 	let panoramaWorker: Worker | null = null;
 	let rejectPanorama: ((error: unknown) => void) | null = null;
 	let lastTap: { time: number; x: number; y: number } | null = null;
-	let cloudPointer: { id: number; time: number; x: number; y: number } | null = null;
+	let artGesture: { id: number; time: number; x: number; y: number; moved: boolean } | null = null;
+	const artPointers = new Map<number, { x: number; y: number }>();
+	let pinchGap = 0;
 
 	function stopCamera() {
 		cameraAttempt++;
@@ -74,45 +60,33 @@
 		if (video) video.srcObject = null;
 	}
 	function clearResult() {
-		stopTracking();
-		viewerReady = false;
-		viewer?.dispose(); viewer = null;
-		if (plyUrl) URL.revokeObjectURL(plyUrl);
-		plyUrl = '';
+		tone = null;
+		cancelAnimationFrame(paintFrame); paintFrame = 0;
+		artPointers.clear(); artGesture = null; pinchGap = 0;
 	}
-	function selectQuality(level: QualityLevel) {
-		qualityLevel = level;
-		qualitySlider?.setLevel(level);
-		try { window.localStorage?.setItem('entropi-quality', String(level)); } catch {}
-		announcement = `Neste opptak: ${qualityLabel[level]}`;
+	function paint() {
+		cancelAnimationFrame(paintFrame); paintFrame = 0;
+		if (!tone || !captured || !art) return;
+		const { data, width, height } = captured;
+		const pixels = tone({ preset, position, width: bandWidth, outputWidth: width, outputHeight: height });
+		// Panorama areas without a photographed view stay black.
+		for (let i = 3; i < pixels.length; i += 4) if (data[i] < 128) pixels[i - 3] = pixels[i - 2] = pixels[i - 1] = 0;
+		if (art.width !== width || art.height !== height) { art.width = width; art.height = height; }
+		art.getContext('2d')?.putImageData(new ImageData(pixels, width, height), 0, 0);
 	}
-	function selectPrimitive(level: PrimitiveLevel) {
-		primitiveLevel = level;
-		primitiveSlider?.setLevel(level);
-		viewer?.setPrimitiveLevel(level);
-		try { window.localStorage?.setItem('entropi-primitive', String(level)); } catch {}
-		announcement = `Pikselstil: ${PRIMITIVE_MODES[level].label}.`;
+	function schedulePaint() {
+		if (!paintFrame) paintFrame = requestAnimationFrame(paint);
 	}
-	function adjustViewer(status: string, density: number | null, prefix = '') {
-		if (disposed) return;
-		if (density !== null) selectQuality(density < .55 ? 1 : density < .9 ? 2 : 3);
-		announcement = `${prefix}${status}${density !== null ? ` Neste opptak: ${qualityLabel[qualityLevel]}` : ''}`;
+	function selectPreset(level: number) {
+		preset = level;
+		presetSlider?.setLevel(level);
+		try { window.localStorage?.setItem('entropi-vatho', String(level)); } catch {}
+		announcement = `Uttrykk: ${VATHOGRAPHY_PRESETS[level].label}.`;
+		if (mode === 'done') schedulePaint();
 	}
-	function stopTracking() {
-		const active = tracker; tracker = null;
-		active?.stop();
-	}
-	function startTracking() {
-		if (disposed || mode !== 'done' || !viewer || !video || tracker || trackingFailed || document.hidden) return;
-		const next = new HeadTracker(video, {
-			pose: pose => viewer?.setHeadPose(pose),
-			state: () => {},
-			error: () => {
-				if (tracker !== next) return;
-				tracker = null; trackingFailed = true;
-			}
-		});
-		tracker = next; void next.start();
+	function setPosition(next: number) {
+		position = Math.max(-1, Math.min(1, next));
+		if (mode === 'done') schedulePaint();
 	}
 	function stopPanorama() {
 		panoramaWorker?.terminate(); panoramaWorker = null;
@@ -219,13 +193,12 @@
 		// Mouse/touch already finish on release; keyboard and assistive clicks still capture.
 		if (event.detail === 0) addTap(pixelsFor(video, video.videoWidth, video.videoHeight));
 	}
-	function stitch(frames: Pixels[]): Promise<Capture> {
-		if (frames.length === 1) return Promise.resolve({ ...captureSnapshot(frames[0]), inputFrames: 1, registeredFrames: 1 });
+	function stitch(frames: Pixels[]): Promise<Pixels> {
 		return new Promise((resolve, reject) => {
 			const worker = new Worker('/pointcloud/panorama-worker.mjs?v=5', { type: 'module' });
 			panoramaWorker = worker;
 			const timer = setTimeout(() => finish(new Error('Panoramaet tok for lang tid. Prøv ei kortare rørsle.')), 60000);
-			function finish(error: unknown, result?: Capture) {
+			function finish(error: unknown, result?: Pixels) {
 				clearTimeout(timer); worker.terminate();
 				if (panoramaWorker === worker) { panoramaWorker = null; rejectPanorama = null; }
 				if (error) reject(error); else if (result) resolve(result);
@@ -236,7 +209,7 @@
 				else if (data.type !== 'result' || !Number.isInteger(data.width) || !Number.isInteger(data.height)
 					|| !(data.data instanceof ArrayBuffer) || data.data.byteLength !== data.width * data.height * 4) {
 					finish(new Error('Panoramaet gav eit ugyldig resultat.'));
-				} else finish(null, { ...data, data: new Uint8ClampedArray(data.data) });
+				} else finish(null, { width: data.width, height: data.height, data: new Uint8ClampedArray(data.data) });
 			};
 			worker.onerror = () => finish(new Error('Kunne ikkje setje saman bileta.'));
 			const input = frames.map(frame => ({ width: frame.width, height: frame.height, data: frame.data.buffer }));
@@ -248,103 +221,61 @@
 		clearTapBatch();
 		if (!frames.length) { mode = 'camera'; openCapture(); return; }
 		try {
-			reconstruction?.abort(); clearResult(); captured = null; progress = null; mode = 'working';
+			clearResult(); progress = null; mode = 'working';
 			captureJobId = `${printSession}:${id}`;
 			showPixels(frames[0]); stopCamera();
-			announcement = 'Lagar Gaussian-scene frå kamerabileta.';
-			// Preserve independent original views. A stitched flat panorama loses camera geometry.
-			capturedFrames = reconstructionFrames(frames).map(frame => ({...frame, data: new Uint8ClampedArray(frame.data)}));
-			captured = {...captureSnapshot(frames[0]), data: new Uint8ClampedArray(frames[0].data), inputFrames: frames.length, registeredFrames: 1};
-			fallbackFrames = frames;
-			await generateCloud(id);
+			captured = { ...captureSnapshot(frames[0]), data: new Uint8ClampedArray(frames[0].data) };
+			if (frames.length > 1) {
+				announcement = 'Set saman panorama.';
+				try { captured = await stitch(frames); }
+				catch (error) { if (disposed || id !== generation) return; console.warn('Panorama registration failed:', error); }
+			}
+			await develop(id);
 		} catch (error) { fail(error, id); }
 	}
 	function fail(error: unknown, id: number) {
 		if (disposed || id !== generation) return;
-		reconstruction?.abort(); clearResult(); estimator.dispose(); stopCamera(); mode = 'error';
-		announcement = error instanceof Error ? error.message : 'Kunne ikkje lage punktskyen. Trykk for å prøve igjen.';
+		clearResult(); estimator.dispose(); stopCamera(); mode = 'error';
+		announcement = error instanceof Error ? error.message : 'Kunne ikkje lage djupnebiletet. Trykk for å prøve igjen.';
 	}
-	async function generateCloud(id: number) {
-		if (!captured) return;
-		const selectedLevel = qualityLevel;
+	async function develop(id: number) {
+		if (disposed || id !== generation || !captured) return;
+		const pixels = captured;
 		mode = 'working'; progress = null;
-		reconstruction?.abort();
-		const task = new AbortController(); reconstruction = task;
 		try {
-			if (selectedLevel > 0) try {
-				const scene = await reconstructGaussian(capturedFrames, update => {
-					if (!disposed && id === generation) { progress = update.percent ?? null; announcement = 'Lagar Gaussian-scene på modelltenaren.'; }
-				}, task.signal, qualityDensity[selectedLevel]);
-				if (disposed || id !== generation) return;
-				estimator.dispose(); fallbackFrames = null;
-				mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
-				await tick();
-				if (disposed || id !== generation || !cloudHost) return;
-				const artifact = new Blob([new Uint8Array(scene.bytes)], {type: 'application/octet-stream'});
-				const next = await createGaussianViewer(cloudHost, scene.bytes, scene.camera, error => fail(error, id), task.signal,
-					(status, density) => { if (!disposed && id === generation) adjustViewer(status, density); }, selectedLevel);
-				if (disposed || id !== generation) { next.dispose(); return; }
-				viewer = next;
-				viewer.setPrimitiveLevel(primitiveLevel);
-				viewerReady = true;
-				downloadName = 'entropi-gaussian.splat';
-				plyUrl = URL.createObjectURL(artifact);
-				announcement = `Gaussian-scene klar frå ${scene.frames} bilete, med ${scene.model}. Hald inne for utskrift. Rist for å tømme lerretet.`;
-				queueCurrentPrint(); startTracking(); return;
-			} catch (error) {
-				if (disposed || id !== generation || task.signal.aborted) return;
-				// Keep the existing local capture working while Shadow is offline. Never describe this as Gaussian splatting.
-				clearResult(); announcement = 'Gaussian-tenaren er utilgjengeleg. Lagar ei lokal djupnebasert punktsky som reserve.';
-				console.warn('Gaussian reconstruction unavailable:', error);
-			} else announcement = 'Lagar lokal djupnebasert punktsky på eininga.';
-			if (fallbackFrames) {
-				const frames = fallbackFrames; fallbackFrames = null;
-				try { captured = await stitch(frames); }
-				catch (error) { if (disposed || id !== generation) return; console.warn('Panorama registration failed:', error); }
-			}
-			if (disposed || id !== generation || !captured) return;
-			const pixels = captured;
-			mode = 'working';
 			const prediction = await estimateImageDepth(pixels, estimator, update => {
 				if (disposed || id !== generation) return;
 				progress = update.percent ?? null;
-				announcement = update.phase.startsWith('loading') ? 'Lastar djupnemodellen til eininga.' : 'Reknar djupn.';
+				announcement = update.phase.startsWith('loading') ? 'Lastar Depth Pro 2 til eininga.' : 'Reknar djupn.';
 			}, () => !disposed && id === generation);
 			if (disposed || id !== generation) return;
-			// Release the depth model before starting the small front-camera detector.
+			// Free the model's memory between photographs.
 			estimator.dispose();
-			const cloud = imageToPointCloud({ rgba: pixels.data, width: pixels.width, height: pixels.height,
-				depth: prediction.depth, depthWidth: prediction.width, depthHeight: prediction.height,
-				stride: pointStride(pixels.width, pixels.height), focalEstimate: pixels.focalEstimate });
+			tone = prepareToneDepth(normalizeDepth(prediction.depth), prediction.width, prediction.height);
 			mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
 			await tick();
-			if (disposed || id !== generation || !cloudHost) return;
-			const localViewer = createPointCloudViewer(cloudHost, cloud, error => fail(error, id),
-				(status, density) => { if (!disposed && id === generation) adjustViewer(status, density, selectedLevel === 0 ? 'Lokal djupnebasert punktsky på eininga. ' : 'Lokal djupnebasert punktsky som reserve. '); });
-			localViewer.setStyle('color'); viewer = localViewer;
-			viewer.setPrimitiveLevel(primitiveLevel);
-			viewerReady = true;
-			plyUrl = URL.createObjectURL(new Blob([pointCloudPLY(cloud)], { type: 'application/octet-stream' }));
-			downloadName = 'entropi-punktsky.ply';
-				announcement = `${selectedLevel === 0 ? 'Lokal djupnebasert punktsky på eininga.' : 'Lokal djupnebasert punktsky som reserve etter at Shadow ikkje svara.'} ${pixels.registeredFrames ?? 1} av ${pixels.inputFrames ?? 1} bilete registrerte. Dra med ein finger for å rotere. Dra og knip med to fingrar for å flytte scena og zoome samstundes. Dra med tre fingrar loddrett for talet på element og kvaliteten på neste bilete, eller vassrett for kor skarpe og tette punkta er. Dobbelttrykk for eit nytt bilete. Djupna er estimert.`;
-			// Printing is independent of viewing: no dialog or failure can replace the cloud.
+			if (disposed || id !== generation) return;
+			paint();
+			announcement = `${VATHOGRAPHY_PRESETS[preset].label}. Djupna er estimert med Depth Pro 2. Dra vassrett for å flytte djupneområdet, og knip for breidda. Dra langs høgre kant for fem uttrykk. Hald inne for utskrift. Dobbelttrykk for eit nytt bilete.`;
 			queueCurrentPrint();
-			startTracking();
 		} catch (error) { fail(error, id); }
 	}
 	function queueCurrentPrint(jobId = captureJobId) {
-		if (!printer?.device || !viewer || mode !== 'done') return;
-		try { printer.enqueue(jobId, cloudPrintJob(viewer.snapshot())); }
-		catch { printerAnnouncement = 'Scena er klar, men utskrifta kunne ikkje klargjerast.'; }
+		if (!printer?.device || !tone || !art || mode !== 'done') return;
+		try { printer.enqueue(jobId, artPrintJob(art)); }
+		catch { printerAnnouncement = 'Biletet er klart, men utskrifta kunne ikkje klargjerast.'; }
 	}
 	function printCurrent() {
-		if (!viewer || mode !== 'done' || !printer?.supported || printer.choosing || printer.busy) return;
-		const id = generation, source = viewer;
+		if (!tone || mode !== 'done' || !printer?.supported || printer.choosing || printer.busy) return;
+		const id = generation, source = tone;
 		// Invoke the native chooser in pointerup itself, even if Bluetooth was enabled after capture.
 		const pairing = printer.device ? printer.start() : printer.choose();
 		void pairing.then(ready => {
-			if (ready && !disposed && id === generation && source === viewer) queueCurrentPrint(`${captureJobId}:manual:${++manualPrint}`);
+			if (ready && !disposed && id === generation && source === tone) queueCurrentPrint(`${captureJobId}:manual:${++manualPrint}`);
 		});
+	}
+	function saveArt(event: MouseEvent) {
+		(event.currentTarget as HTMLAnchorElement).href = art.toDataURL('image/png');
 	}
 	async function decodePhoto(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close(): void }> {
 		if (typeof createImageBitmap === 'function') {
@@ -387,35 +318,63 @@
 		event.preventDefault(); void captureFiles(files);
 	}
 	async function retake() {
-		generation++; reconstruction?.abort(); reconstruction = null;
+		generation++;
 		clearTapBatch();
 		recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera(); captured = null;
-		capturedFrames = []; fallbackFrames = null;
 		captureJobId = '';
-		capturePointer = null; cloudPointer = null;
+		capturePointer = null;
 		progress = null; lastTap = null; mode = 'camera';
-		announcement = 'Trykk for eitt bilete. Hald inne for fleire bilete.';
+		announcement = 'Trykk for eit djupnebilete. Hald inne for panorama.';
 		if (photoInput) photoInput.value = '';
 		if (preview) { preview.source = null; preview.clear(); preview.active = true; }
 		await tick(); void startCamera();
 	}
 	function clearCanvas() {
 		// A lifted finger after a shake must not capture the discarded frames again.
-		if (capturePointer !== null || cloudPointer !== null) suppressCaptureClick = true;
+		if (capturePointer !== null || artGesture !== null) suppressCaptureClick = true;
 		// A released shutter has already committed its print; clearing only resets the draft/view.
 		void retake();
 	}
 	function retry() {
 		if (!captured) { void retake(); return; }
-		clearResult(); void generateCloud(++generation);
+		clearResult(); void develop(++generation);
 	}
-	function cloudDown(event: PointerEvent) {
-		if (!event.isPrimary) { cloudPointer = null; lastTap = null; return; }
-		cloudPointer = { id: event.pointerId, time: performance.now(), x: event.clientX, y: event.clientY };
+	function pinchDistance() {
+		const [a, b] = [...artPointers.values()];
+		return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
 	}
-	function cloudUp(event: PointerEvent) {
-		const start = cloudPointer; cloudPointer = null;
-		if (!start || start.id !== event.pointerId || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 12) return;
+	function artDown(event: PointerEvent) {
+		artPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+		if (artPointers.size === 1 && event.isPrimary) {
+			artGesture = { id: event.pointerId, time: performance.now(), x: event.clientX, y: event.clientY, moved: false };
+			return;
+		}
+		if (artGesture) artGesture.moved = true;
+		lastTap = null; pinchGap = pinchDistance();
+	}
+	function artMove(event: PointerEvent) {
+		const last = artPointers.get(event.pointerId);
+		if (!last) return;
+		const next = { x: event.clientX, y: event.clientY };
+		artPointers.set(event.pointerId, next);
+		if (mode !== 'done') return;
+		if (artPointers.size === 1 && artGesture?.id === event.pointerId) {
+			if (!artGesture.moved && Math.hypot(next.x - artGesture.x, next.y - artGesture.y) <= 12) return;
+			artGesture.moved = true;
+			setPosition(position + (next.x - last.x) / Math.max(1, art?.clientWidth || 1));
+		} else if (artPointers.size === 2) {
+			const distance = pinchDistance();
+			if (pinchGap > 0 && distance > 0) { bandWidth = Math.max(.25, Math.min(3, bandWidth * distance / pinchGap)); schedulePaint(); }
+			pinchGap = distance;
+		}
+	}
+	function artUp(event: PointerEvent) {
+		artPointers.delete(event.pointerId);
+		pinchGap = pinchDistance();
+		const start = artGesture;
+		if (!start || start.id !== event.pointerId) return;
+		artGesture = null;
+		if (start.moved || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 12) { lastTap = null; return; }
 		const held = performance.now() - start.time;
 		if (held >= 500) { lastTap = null; printCurrent(); return; }
 		if (held > 250) return;
@@ -423,23 +382,21 @@
 		if (lastTap && tap.time - lastTap.time < 360 && Math.hypot(tap.x - lastTap.x, tap.y - lastTap.y) < 28) void retake();
 		else lastTap = tap;
 	}
+	function artCancel(event: PointerEvent) {
+		artPointers.delete(event.pointerId); pinchGap = pinchDistance();
+		if (artGesture?.id === event.pointerId) artGesture = null;
+	}
 	function keys(event: KeyboardEvent) {
 		if (event.key === 'Escape') void retake();
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
 		try {
-			const saved = window.localStorage?.getItem('entropi-quality');
-			if (saved && /^[0-3]$/.test(saved)) qualityLevel = Number(saved) as QualityLevel;
+			const saved = window.localStorage?.getItem('entropi-vatho');
+			if (saved && /^[0-4]$/.test(saved)) preset = Number(saved);
 		} catch {}
-		try {
-			const saved = window.localStorage?.getItem('entropi-primitive');
-			if (saved && /^[0-3]$/.test(saved)) primitiveLevel = Number(saved) as PrimitiveLevel;
-		} catch {}
-		qualitySlider = attachEdgeQualitySlider(window, {initialLevel: qualityLevel, onLevel: selectQuality,
-			onActive: active => { qualityActive = active; }});
-		primitiveSlider = attachEdgeQualitySlider(window, {edge: 'left', initialLevel: primitiveLevel, onLevel: selectPrimitive,
-			onActive: active => { primitiveActive = active; }});
+		presetSlider = attachEdgeQualitySlider(window, {levels: VATHOGRAPHY_PRESETS.length, initialLevel: preset, onLevel: selectPreset,
+			onActive: active => { presetActive = active; }});
 		shake = new ShakeToClear({ target: window, hasDraft: () => recorder.active || pendingTaps.length > 0 || mode !== 'camera', clear: clearCanvas });
 		shake.start();
 		printer = new PX10Printer();
@@ -447,8 +404,8 @@
 			const state = (event as CustomEvent).detail.state as string;
 			printerAnnouncement = ({ choosing: 'Vel PX10 i Bluetooth-dialogen.', connecting: 'Koplar til skrivaren.',
 				connected: 'Skrivaren er klar. Trykk for bilete, hald inne for panorama.', reconnecting: 'Koplar til skrivaren att.',
-				sending: 'Skriv ut punktskyen.', sent: 'Punktskyen er sendt til skrivaren.',
-				cancelled: 'Kameraet kan brukast utan utskrift.', failed: 'Utskrifta stoppa. Kameraet og punktskyen er framleis tilgjengelege.' } as Record<string, string>)[state] ?? '';
+				sending: 'Skriv ut djupnebiletet.', sent: 'Djupnebiletet er sendt til skrivaren.',
+				cancelled: 'Kameraet kan brukast utan utskrift.', failed: 'Utskrifta stoppa. Kameraet og djupnebiletet er framleis tilgjengelege.' } as Record<string, string>)[state] ?? '';
 		};
 		printer.addEventListener('status', printStatus);
 		const restorePrinter = () => { if (!document.hidden) void printer?.start(); };
@@ -459,7 +416,7 @@
 		try { preview = new Viewfinder(finder); } catch { announcement = 'Kamerasøkjaren kunne ikkje startast. Trykk for å velje eit bilete.'; }
 		void startCamera();
 		const suspend = () => {
-			clearTimeout(resumeTimer); clearTapBatch(); recorder.abort(); stopTracking(); stopCamera();
+			clearTimeout(resumeTimer); clearTapBatch(); recorder.abort(); stopCamera();
 			shake?.suspend();
 			printer?.suspend();
 			if (mode === 'camera') preview?.clear();
@@ -471,19 +428,16 @@
 			restorePrinter();
 			if (updated.current && mode === 'camera') { location.reload(); return; }
 			resumeTimer = setTimeout(() => {
-				if (mode === 'camera') {
-					if (stream && !stream.getVideoTracks().some(track => track.readyState === 'live')) stopCamera();
-					void startCamera();
-				}
-				else if (mode === 'done') startTracking();
+				if (mode !== 'camera') return;
+				if (stream && !stream.getVideoTracks().some(track => track.readyState === 'live')) stopCamera();
+				void startCamera();
 			}, 300);
 		};
 		window.addEventListener('focus', resume); document.addEventListener('visibilitychange', resume);
 		window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', resume);
 		return () => {
-			disposed = true; generation++; reconstruction?.abort(); capturedFrames = []; fallbackFrames = null; clearTimeout(resumeTimer); clearTapBatch(); recorder.abort();
-			qualitySlider?.dispose(); qualitySlider = null;
-			primitiveSlider?.dispose(); primitiveSlider = null;
+			disposed = true; generation++; clearTimeout(resumeTimer); clearTapBatch(); recorder.abort();
+			presetSlider?.dispose(); presetSlider = null;
 			shake?.dispose(); shake = null;
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
@@ -496,7 +450,7 @@
 
 <svelte:head>
 	<title>entropi</title>
-	<meta name="description" content="Eit stille kamera. Trykk for eit bilete, hald inne og panorer for ei punktsky av fleire bilete." />
+	<meta name="description" content="Eit stille djupnekamera. Trykk for eit bilete, og Depth Pro 2 framkallar det som djupnelitografi." />
 	<meta name="apple-mobile-web-app-title" content="entropi" />
 	<link rel="manifest" href="/manifest.webmanifest" />
 	<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -505,7 +459,7 @@
 <svelte:window onkeydown={keys} onpaste={pasteCapture} />
 <main class="studio" class:recording={mode === 'recording'} class:working={mode === 'working'} class:result={mode === 'done'}>
 	<video bind:this={video} autoplay muted playsinline aria-hidden="true" tabindex="-1"></video>
-	<div class="finder" class:hidden={mode === 'done' && viewerReady} aria-hidden="true">
+	<div class="finder" class:hidden={mode === 'done'} aria-hidden="true">
 		<canvas bind:this={finder}></canvas>
 		<i class="cross"></i>
 		{#if mode === 'recording'}<i class="record-light"></i>{/if}
@@ -514,30 +468,28 @@
 		{/if}
 	</div>
 	{#if mode === 'camera' || mode === 'recording'}
-		<button class="capture-plane" type="button" aria-label="Trykk for bilete og utskrift. Hald inne for panorama. Dra ein finger langs høgre kant for fire detaljnivå, eller langs venstre kant for fire pikselstilar frå C64 til grøn monokrom. Rist for å tømme lerretet. Dei første trykka gir systemløyve når det trengst."
+		<button class="capture-plane" type="button" aria-label="Trykk for eit djupnebilete og utskrift. Hald inne for panorama. Dra ein finger langs høgre kant for fem djupneuttrykk. Rist for å tømme lerretet. Dei første trykka gir systemløyve når det trengst."
 			onpointerdown={beginCapture} onpointerup={endCapture} onpointercancel={cancelCapture} onlostpointercapture={cancelCapture} oncontextmenu={event => event.preventDefault()} onclick={captureClick}></button>
 		<button class="access-control" type="button" aria-label="Vel bilete frå telefonen" onclick={openCapture}><i class="plus" aria-hidden="true"></i></button>
 	{:else if mode === 'working'}
-		<button class="capture-plane" type="button" aria-label="Dobbelttrykk for å avbryte berekninga" onpointerdown={cloudDown} onpointerup={cloudUp}></button>
+		<button class="capture-plane" type="button" aria-label="Dobbelttrykk for å avbryte berekninga" onpointerdown={artDown} onpointerup={artUp} onpointercancel={artCancel}></button>
 		<button class="access-control" type="button" aria-label="Avbryt berekninga" onclick={retake}><i class="plus close" aria-hidden="true"></i></button>
 	{:else if mode === 'error'}
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
-	<!-- Native keyboard/screen-reader alternatives stay invisible until focus. -->
-	<div class="cloud" class:hidden={mode !== 'done' || !viewerReady} bind:this={cloudHost} onpointerdown={cloudDown} onpointerup={cloudUp} onpointercancel={() => { cloudPointer = null; }} oncontextmenu={event => event.preventDefault()} role="img" aria-label="3D-scene. Hald inne utan å flytte fingeren for utskrift. Dra med ein finger for å rotere. Dra og knip med to fingrar for å flytte scena og zoome samstundes. Dra med tre fingrar loddrett for talet på element og kvaliteten på neste bilete, eller vassrett for kor skarpe og tette punkta er. Dra ein finger langs høgre kant for fire detaljnivå på neste opptak, eller langs venstre kant for C64, EGA, CGA og grøn monokrom med pikselmønster. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete."></div>
-	<div class="quality-rail" class:active={qualityActive} aria-hidden="true">
-		{#each [3, 2, 1, 0] as level}<i class:chosen={qualityLevel === level}></i>{/each}
+	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Dra vassrett for å flytte djupneområdet, og knip med to fingrar for breidda. Dra ein finger langs høgre kant for fem uttrykk. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
+		<canvas bind:this={art}></canvas>
 	</div>
-	<div class="quality-rail primitive-rail" class:active={primitiveActive} aria-hidden="true">
-		{#each [3, 2, 1, 0] as level}<i class:chosen={primitiveLevel === level}></i>{/each}
+	<div class="quality-rail" class:active={presetActive} aria-hidden="true">
+		{#each [4, 3, 2, 1, 0] as level, index}<i class:chosen={preset === level} style:top={`${index * 20 + 10}%`}></i>{/each}
 	</div>
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
-		{#if plyUrl}<a class="access-control download" href={plyUrl} download={downloadName} aria-label="Last ned 3D-scena"><i class="download-mark" aria-hidden="true"></i></a>{/if}
+		<a class="access-control download" href="/" download="entropi-djupn.png" aria-label="Last ned djupnebiletet" onclick={saveArt}><i class="download-mark" aria-hidden="true"></i></a>
 	{/if}
 	<input bind:this={photoInput} type="file" accept="image/*" multiple onchange={capture} oncancel={() => void startCamera()} tabindex="-1" aria-label="Kamerabilete" />
-	<input class="sr-only" type="range" min="0" max="3" step="1" value={qualityLevel} aria-label="Detaljnivå for neste opptak" aria-valuetext={qualityLabel[qualityLevel]} oninput={event => selectQuality(Number(event.currentTarget.value) as QualityLevel)} />
-	<input class="sr-only" type="range" min="0" max="3" step="1" value={primitiveLevel} aria-label="Pikselstil frå tidlege datamaskiner" aria-valuetext={PRIMITIVE_MODES[primitiveLevel].label} oninput={event => selectPrimitive(Number(event.currentTarget.value) as PrimitiveLevel)} />
+	<input class="sr-only" type="range" min="0" max="4" step="1" value={preset} aria-label="Djupneuttrykk" aria-valuetext={VATHOGRAPHY_PRESETS[preset].label} oninput={event => selectPreset(Number(event.currentTarget.value))} />
+	<input class="sr-only" type="range" min="-1" max="1" step="0.02" value={position} aria-label="Djupneområde" oninput={event => setPosition(Number(event.currentTarget.value))} />
 	<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
 	<span class="sr-only" role="status" aria-live="polite">{printerAnnouncement}</span>
 </main>

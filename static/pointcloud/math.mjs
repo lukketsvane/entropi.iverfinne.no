@@ -1,8 +1,8 @@
 // Camera colours and AI inverse depth are separate inputs. No brightness-to-depth fallback.
 /** @param {number} width @param {number} height */
-export function inferenceSize(width, height) {
+export function inferenceSize(width, height, max = 768) {
   if (!(width > 0 && height > 0)) throw new Error('Ugyldig kamerabilete.');
-  const scale = 448 / Math.max(width, height);
+  const scale = max / Math.max(width, height);
   return { width: Math.max(160, Math.round(width * scale / 32) * 32), height: Math.max(160, Math.round(height * scale / 32) * 32) };
 }
 

@@ -172,3 +172,13 @@ test('left edge preserves primary touch and accessible control exclusions', () =
   assert.equal(screen.send('pointerdown', {x: 25}).stopped, false);
   left.dispose();
 });
+
+test('a rail with five levels maps the full edge height to five choices', () => {
+  const screen = surface(), selected = [];
+  const slider = attachEdgeQualitySlider(screen, {levels: 5, initialLevel: 1, onLevel: level => selected.push(level)});
+  for (const y of [799, 600, 400, 200, 0]) screen.send(y === 799 ? 'pointerdown' : 'pointermove', {y});
+  screen.send('pointerup', {y: 0});
+  assert.deepEqual(selected, [0, 1, 2, 3, 4]);
+  assert.equal(slider.level, 4);
+  slider.dispose();
+});

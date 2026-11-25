@@ -6,29 +6,25 @@ import ts from 'typescript';
 import { FrameRecorder } from '../src/lib/pointcloud/recorder.mjs';
 import { ShakeToClear } from '../src/lib/pointcloud/shake.mjs';
 import { captureSnapshot } from '../static/pointcloud/panorama.mjs';
-import { imageToPointCloud, pointCloudPLY, pointStride } from '../static/pointcloud/math.mjs';
 import { WIDTH, PRINTER_NAME, buildPrintJob, joinBytes } from '../src/lib/print/px10-protocol.mjs';
 import { PX10Printer } from '../src/lib/print/printer.mjs';
-import { reconstructionFrames, processResolution } from '../src/lib/pointcloud/reconstruct.mjs';
-import { PRIMITIVE_MODES } from '../src/lib/pointcloud/primitive-style.ts';
+import * as vathography from '../src/lib/vathography.mjs';
 
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
 export const harness = {
-  beginCapture, endCapture, captureClick, retake, retry, cloudDown, cloudUp,
-  get mode(){ return mode; }, get printer(){ return printer; },
-  get announcement(){ return announcement; }, get quality(){ return qualityLevel; },
-  get primitive(){ return primitiveLevel; },
-  get draft(){ return captured; }, get download(){ return plyUrl; },
-  mount(elements){ video=elements.video; finder=elements.finder; cloudHost=elements.cloud; photoInput=elements.input; }
+  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset,
+  get mode(){ return mode; }, get printer(){ return printer; }, get announcement(){ return announcement; },
+  get preset(){ return preset; }, get position(){ return position; }, get bandWidth(){ return bandWidth; }, get draft(){ return captured; },
+  mount(elements){ video=elements.video; finder=elements.finder; art=elements.art; photoInput=elements.input; }
 };`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const waitFor = async predicate => {
   const until = Date.now() + 1500;
   while (!predicate()) { if (Date.now() > until) throw new Error('Timed out'); await new Promise(resolve => setTimeout(resolve, 2)); }
 };
 
-function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, gaussian = false, gaussianGate = null, gaussianViewerGate = null, changingFrames = false, storage = null } = {}) {
-  const writes = [], requested = [], paper = buildPrintJob(new Uint8Array(WIDTH * 2));
+function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, depthError = null, changingFrames = false, storage = null } = {}) {
+  const writes = [], requested = [], paints = [], paper = buildPrintJob(new Uint8Array(WIDTH * 2));
   const device = new EventTarget(); device.name = PRINTER_NAME; device.id = 'px10';
   const notifier = new EventTarget(); notifier.startNotifications = async () => notifier;
   const writer = { properties: { writeWithoutResponse: true }, writeValueWithoutResponse: async bytes => { writes.push(bytes.slice()); } };
@@ -40,10 +36,11 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   class CameraPrinter extends PX10Printer {
     constructor(){ super({ bluetooth: () => api, storage: () => undefined, delay: 0 }); }
   }
-  let mount, cleanup, viewError, preview, generated = 0, disposedViews = 0, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, gaussianViews = 0, samples = 0;
-  const gaussianDensities = [], gaussianDetailLevels = [], primitiveLevels = [], sliders = new Map();
+  let mount, cleanup, preview, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, samples = 0, estimates = 0;
+  const sliders = new Map();
   const track = { stop(){}, readyState: 'live' }, stream = { getTracks: () => [track], getVideoTracks: () => [track] };
   const video = { readyState: 2, videoWidth: 4, videoHeight: 4, srcObject: null, play: async () => {} };
+  const art = { width: 1, height: 1, clientWidth: 100, getContext: () => ({ putImageData(image){ paints.push(image); } }) };
   const document = Object.assign(new EventTarget(), {
     hidden: false, visibilityState: 'visible', createElement: () => ({ width: 4, height: 4, getContext: () => ({
       fillRect(){}, drawImage(){}, putImageData(){}, getImageData: () => ({ width: 4, height: 4, data: new Uint8ClampedArray(64).fill(changingFrames ? 100 + (++samples) * 10 : 180) })
@@ -61,39 +58,22 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     svelte: { onMount: callback => { mount = callback; }, tick: async () => {} },
     '$app/state': { updated: { current: false } },
     '../lib/pointcloud/estimator.mjs': { DepthEstimator: class { dispose(){} } },
-    '../lib/pointcloud/viewer.mjs': { createPointCloudViewer: (_, cloud, onError) => {
-      generated++; assert.ok(cloud.count > 0); viewError = onError;
-      return { setStyle(){}, setPrimitiveLevel(level){ primitiveLevels.push({kind: 'local', level}); }, setHeadPose(){}, dispose(){ disposedViews++; }, snapshot: () => ({ width: 384, height: 2 }) };
-    } },
-    '../lib/pointcloud/reconstruct.mjs': { reconstructionFrames, reconstructGaussian: async (frames, _update, _signal, density) => {
-      gaussianDensities.push(density);
-      if (gaussianGate) await gaussianGate;
-      if (!gaussian) throw new Error('Shadow unavailable');
-      gaussianViews = frames.length;
-      return {bytes: new Uint8Array(32), model: 'Apple SHARP', camera: {}, frames: frames.length};
-    } },
     '../lib/pointcloud/edge-quality-slider': { attachEdgeQualitySlider: (_surface, options) => {
-      const slider = {level: options.initialLevel, disposed: false, setLevel(level){ this.level = level; }, select(level){ options.onLevel(level); }, dispose(){ this.disposed = true; }};
+      const slider = {options, level: options.initialLevel, setLevel(level){ this.level = level; }, select(level){ options.onLevel(level); }, dispose(){}};
       sliders.set(options.edge ?? 'right', slider);
       return slider;
-    } },
-    '../lib/pointcloud/primitive-style.ts': { PRIMITIVE_MODES },
-    '../lib/pointcloud/gaussian-viewer.mjs': { createGaussianViewer: async (_, bytes, camera, onError, signal, onAdjust, detailLevel) => {
-      generated++; assert.equal(bytes.length, 32); viewError = onError;
-      gaussianDetailLevels.push(detailLevel);
-      if (gaussianViewerGate) await gaussianViewerGate;
-      return {setPrimitiveLevel(level){ primitiveLevels.push({kind: 'gaussian', level}); }, setHeadPose(){}, dispose(){disposedViews++;}, snapshot: () => ({width: 384, height: 2})};
     } },
     '../lib/pointcloud/viewfinder.mjs': { Viewfinder: class { constructor(){ preview = this; } clear(){ this.source = null; } dispose(){} } },
     '../lib/pointcloud/recorder.mjs': { FrameRecorder },
     '../lib/pointcloud/shake.mjs': { ShakeToClear: CameraShake },
-    '../lib/pointcloud/head-tracker': { HeadTracker: class { start(){} stop(){} } },
     '../lib/print/printer.mjs': { PX10Printer: CameraPrinter },
-    '../lib/print/cloud-raster.mjs': { cloudPrintJob: () => paper },
-    '../../static/pointcloud/math.mjs': { imageToPointCloud, pointCloudPLY, pointStride },
+    '../lib/print/cloud-raster.mjs': { artPrintJob: source => { assert.equal(source, art); return paper; } },
+    '../lib/vathography.mjs': vathography,
     '../../static/pointcloud/tiles.mjs': { estimateImageDepth: async () => {
       if (depthGate) await depthGate;
-      return { depth: new Float32Array(16).fill(1), width: 4, height: 4 };
+      estimates++;
+      if (depthError) { const error = depthError; depthError = null; throw error; }
+      return { depth: Float32Array.from({ length: 16 }, (_, i) => i), width: 4, height: 4 };
     } },
     '../../static/pointcloud/panorama.mjs': { captureSnapshot },
     '../lib/pointcloud/studio.css': {}
@@ -101,7 +81,8 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   const exports = {};
   vm.runInNewContext(compiled, { exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
     $state: value => value, navigator: { mediaDevices: { getUserMedia: async () => { cameraRequests++; return stream; } } }, document, window,
-    setTimeout, clearTimeout, performance: {now: () => pointerTime}, console: {...console, warn(){}}, URL, Blob, crypto, ArrayBuffer, Uint8Array, Uint8ClampedArray, Float32Array, DOMException, AbortController,
+    setTimeout, clearTimeout, requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout,
+    performance: {now: () => pointerTime}, console: {...console, warn(){}}, URL, Blob, crypto, ArrayBuffer, Uint8Array, Uint8ClampedArray, Float32Array, DOMException, AbortController,
     ImageData: class { constructor(data, width, height){ Object.assign(this, { data, width, height }); } },
     Worker: class {
       terminate(){}
@@ -110,7 +91,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
       } })); }
     }
   });
-  exports.harness.mount({ video, finder: {}, cloud: {}, input: { click(){} } }); cleanup = mount();
+  exports.harness.mount({ video, finder: {}, art, input: { click(){} } }); cleanup = mount();
   const event = { isPrimary: true, pointerType: 'touch', pointerId: 1, preventDefault(){}, currentTarget: { setPointerCapture(){} } };
   const tap = () => { exports.harness.beginCapture(event); exports.harness.endCapture(event); exports.harness.captureClick({ detail: 1 }); };
   const shake = () => {
@@ -119,42 +100,42 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
       window.dispatchEvent(Object.assign(new Event('devicemotion'), { acceleration: { x, y: 0, z: 0 } }));
     }
   };
-  return { ...exports.harness, harness: exports.harness, tap, requested, writes, paper,
-    selectQuality: level => sliders.get('right').select(level), selectPrimitive: level => sliders.get('left').select(level),
-    slider: edge => sliders.get(edge), primitiveLevels: () => primitiveLevels,
-    gaussianResolutions: () => gaussianDensities.map(processResolution), gaussianDetailLevels: () => gaussianDetailLevels,
-    enableBluetooth: () => { api = bluetooth; }, advancePointer: ms => { pointerTime += ms; }, gaussianViews: () => gaussianViews,
+  const point = (pointerId, clientX, clientY = 200, isPrimary = pointerId === 1) => ({ pointerId, clientX, clientY, isPrimary });
+  return { harness: exports.harness, tap, requested, writes, paper, paints, art, slider: edge => sliders.get(edge),
+    enableBluetooth: () => { api = bluetooth; }, advancePointer: ms => { pointerTime += ms; }, point,
     holdResult: (move = 0) => {
-      const down = {...event, clientX: 100, clientY: 200}; exports.harness.cloudDown(down);
-      pointerTime += 600; exports.harness.cloudUp({...down, clientX: 100 + move});
+      exports.harness.artDown(point(1, 100));
+      if (move) exports.harness.artMove(point(1, 100 + move));
+      pointerTime += 600; exports.harness.artUp(point(1, 100 + move));
     },
     shake, begin: () => exports.harness.beginCapture(event), end: () => {
       exports.harness.endCapture(event); exports.harness.captureClick({ detail: 1 });
-    }, motionRequests: () => motionRequests, stitchedFrames: () => stitchedFrames,
-    cameraRequests: () => cameraRequests, previewSource: () => preview?.source, video,
-    disposedViews: () => disposedViews, generated: () => generated, failView: () => viewError(new Error('GPU lost')), cleanup: () => cleanup() };
+    }, motionRequests: () => motionRequests, stitchedFrames: () => stitchedFrames, estimates: () => estimates,
+    cameraRequests: () => cameraRequests, previewSource: () => preview?.source, video, cleanup: () => cleanup() };
 }
+const grey = image => Array.from({ length: image.width * image.height }, (_, i) => image.data[i * 4]);
 
-test('the actual Entropi shutter pairs once, then captures and prints; GPU retry does not print twice', async t => {
+test('the shutter pairs once, then develops a depth lithograph from Depth Pro 2 and prints it', async t => {
   const camera = fixture(); t.after(camera.cleanup);
-  camera.tap(); assert.equal(camera.requested.length, 1); assert.equal(camera.generated(), 0);
+  camera.tap(); assert.equal(camera.requested.length, 1); assert.equal(camera.estimates(), 0);
   await waitFor(() => camera.harness.printer.ready);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.writes.length > 0 && !camera.harness.printer.busy);
-  assert.equal(camera.generated(), 1); assert.equal(camera.requested.length, 1);
+  assert.equal(camera.estimates(), 1); assert.equal(camera.requested.length, 1);
+  const image = camera.paints.at(-1);
+  assert.deepEqual([image.width, image.height, camera.art.width, camera.art.height], [4, 4, 4, 4]);
+  for (let i = 0; i < image.data.length; i += 4) assert.ok(image.data[i] === image.data[i + 1] && image.data[i] === image.data[i + 2] && image.data[i + 3] === 255);
+  assert.ok(new Set(grey(image)).size > 4, 'Depth becomes a tonal image, not a flat field');
+  assert.match(camera.harness.announcement, /Depth Pro 2/);
   assert.deepEqual(joinBytes(camera.writes), camera.paper);
-  camera.failView(); assert.equal(camera.harness.mode, 'error'); camera.harness.retry();
-  await waitFor(() => camera.harness.mode === 'done');
-  assert.equal(camera.generated(), 2); assert.deepEqual(joinBytes(camera.writes), camera.paper);
   await camera.harness.retake(); camera.tap();
-  await waitFor(() => camera.generated() === 3 && camera.harness.mode === 'done' && !camera.harness.printer.busy);
+  await waitFor(() => camera.estimates() === 2 && camera.harness.mode === 'done' && !camera.harness.printer.busy);
   assert.deepEqual(joinBytes(camera.writes), joinBytes([camera.paper, camera.paper]));
-  assert.equal(camera.requested.length, 1);
 });
 
-test('without an active extension the same shutter still creates a cloud, without a Bluetooth prompt', async t => {
+test('without an active extension the same shutter still develops the image, without a Bluetooth prompt', async t => {
   const camera = fixture(false); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
-  assert.equal(camera.requested.length, 0); assert.equal(camera.generated(), 1); assert.equal(camera.writes.length, 0);
+  assert.equal(camera.requested.length, 0); assert.equal(camera.estimates(), 1); assert.equal(camera.writes.length, 0);
 });
 
 test('enabling Bluetooth after capture allows holding the existing result to pair and print', async t => {
@@ -163,169 +144,78 @@ test('enabling Bluetooth after capture allows holding the existing result to pai
   camera.enableBluetooth(); camera.holdResult();
   assert.equal(camera.requested.length, 1, 'Chooser is called in the actual pointerup gesture');
   await waitFor(() => camera.writes.length && !camera.harness.printer.busy);
-  assert.equal(camera.generated(), 1); assert.deepEqual(joinBytes(camera.writes), camera.paper);
+  assert.equal(camera.estimates(), 1); assert.deepEqual(joinBytes(camera.writes), camera.paper);
 });
 
-test('orbiting the scene cannot accidentally print or open a device picker', async t => {
+test('a horizontal drag moves the depth band without printing or another inference', async t => {
   const camera = fixture(false); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  const before = grey(camera.paints.at(-1));
   camera.enableBluetooth(); camera.holdResult(40);
-  await new Promise(done => setTimeout(done, 10));
-  assert.equal(camera.requested.length, 0); assert.equal(camera.writes.length, 0);
+  await waitFor(() => camera.paints.length > 1);
+  assert.ok(Math.abs(camera.harness.position - .4) < 1e-6);
+  assert.notDeepEqual(grey(camera.paints.at(-1)), before);
+  assert.equal(camera.requested.length, 0); assert.equal(camera.writes.length, 0); assert.equal(camera.estimates(), 1);
 });
 
-test('a two-finger viewer gesture cannot become a long-press print', async t => {
+test('a two-finger pinch changes the band width and cannot become a long-press print', async t => {
   const camera = fixture(false); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
   camera.enableBluetooth();
-  camera.harness.cloudDown({isPrimary: true, pointerId: 1, clientX: 100, clientY: 200});
-  camera.harness.cloudDown({isPrimary: false, pointerId: 2, clientX: 200, clientY: 200});
-  camera.advancePointer(600);
-  camera.harness.cloudUp({pointerId: 1, clientX: 100, clientY: 200});
-  assert.equal(camera.requested.length, 0);
-  assert.equal(camera.writes.length, 0);
+  const { harness, point } = camera;
+  harness.artDown(point(1, 100)); harness.artDown(point(2, 200));
+  harness.artMove(point(2, 300)); camera.advancePointer(600);
+  harness.artUp(point(2, 300)); harness.artUp(point(1, 100));
+  assert.equal(harness.bandWidth, 2);
+  await waitFor(() => camera.paints.length > 1);
+  assert.equal(camera.requested.length, 0); assert.equal(camera.writes.length, 0);
 });
 
-test('real Gaussian result uses its own artifact and print renderer rather than the depth fallback', async t => {
-  const camera = fixture(true, {gaussian: true}); t.after(camera.cleanup);
-  camera.tap(); await waitFor(() => camera.harness.printer.ready);
-  camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.writes.length && !camera.harness.printer.busy);
-  assert.equal(camera.gaussianViews(), 1); assert.equal(camera.stitchedFrames(), 0);
-  assert.equal(camera.generated(), 1); assert.deepEqual(joinBytes(camera.writes), camera.paper);
-});
-
-test('Gaussian pan receives independent captured views without flattening them into a panorama', async t => {
-  const camera = fixture(true, {gaussian: true, changingFrames: true}); t.after(camera.cleanup);
-  camera.tap(); await waitFor(() => camera.harness.printer.ready);
-  camera.begin(); await waitFor(() => camera.harness.mode === 'recording'); camera.end();
-  await waitFor(() => camera.writes.length && !camera.harness.printer.busy);
-  assert.ok(camera.gaussianViews() >= 3); assert.equal(camera.stitchedFrames(), 0);
-  assert.deepEqual(joinBytes(camera.writes), camera.paper);
-});
-
-test('selected on-device level skips Shadow and identifies the local result', async t => {
-  const camera = fixture(false); t.after(camera.cleanup);
-  camera.selectQuality(0);
+test('the right edge selects five expressions, repaints without inference and is remembered', async t => {
+  const storage = new Map();
+  const camera = fixture(false, { storage }); t.after(camera.cleanup);
+  const slider = camera.slider('right');
+  assert.equal(slider.options.levels, 5); assert.equal(camera.harness.preset, 1);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
-  assert.deepEqual(camera.gaussianResolutions(), []);
-  assert.equal(camera.generated(), 1);
-  assert.match(camera.harness.announcement, /Lokal djupnebasert punktsky på eininga/);
-  assert.doesNotMatch(camera.harness.announcement, /reserve/);
-});
-
-test('three Shadow levels request increasing detail for held multiview captures', async t => {
-  const camera = fixture(false, {gaussian: true, changingFrames: true}); t.after(camera.cleanup);
-  for (const level of [1, 2, 3]) {
-    camera.selectQuality(level);
-    assert.equal(camera.harness.quality, level);
-    camera.begin(); await waitFor(() => camera.harness.mode === 'recording'); camera.end();
-    await waitFor(() => camera.harness.mode === 'done');
-    assert.ok(camera.gaussianViews() >= 2);
-    if (level < 3) await camera.harness.retake();
+  const images = new Set([grey(camera.paints.at(-1)).join()]);
+  for (const level of [0, 2, 3, 4]) {
+    const count = camera.paints.length; slider.select(level);
+    await waitFor(() => camera.paints.length > count);
+    images.add(grey(camera.paints.at(-1)).join());
   }
-  assert.deepEqual(camera.gaussianResolutions(), [336, 420, 504]);
-  assert.deepEqual(camera.gaussianDetailLevels(), [1, 2, 3]);
+  assert.equal(images.size, 5); assert.equal(camera.estimates(), 1);
+  assert.equal(storage.get('entropi-vatho'), '4'); assert.equal(slider.level, 4);
+  const next = fixture(false, { storage }); t.after(next.cleanup);
+  assert.equal(next.harness.preset, 4); assert.equal(next.slider('right').level, 4);
 });
 
-test('left primitive rail styles the existing Gaussian scene without changing capture density', async t => {
-  const camera = fixture(false, {gaussian: true}); t.after(camera.cleanup);
-  camera.selectQuality(1); camera.selectPrimitive(3);
-  camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.primitiveLevels().length);
-  assert.equal(camera.harness.quality, 1);
-  assert.equal(camera.harness.primitive, 3);
-  assert.deepEqual(camera.gaussianResolutions(), [336]);
-  assert.deepEqual(camera.gaussianDetailLevels(), [1]);
-  assert.deepEqual(camera.primitiveLevels(), [{kind: 'gaussian', level: 3}]);
-  camera.selectPrimitive(1);
-  assert.deepEqual(camera.primitiveLevels(), [{kind: 'gaussian', level: 3}, {kind: 'gaussian', level: 1}]);
-  assert.equal(camera.harness.quality, 1);
-  assert.equal(camera.slider('right').level, 1);
-  assert.equal(camera.generated(), 1);
-  assert.deepEqual(camera.gaussianResolutions(), [336]);
+test('a failed depth estimate keeps the photo and retry develops it without a new capture', async t => {
+  const camera = fixture(false, { depthError: new Error('Kunne ikkje berekne djupna.') }); t.after(camera.cleanup);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'error');
+  assert.ok(camera.harness.draft); assert.equal(camera.paints.length, 0);
+  camera.harness.retry(); await waitFor(() => camera.harness.mode === 'done');
+  assert.equal(camera.estimates(), 2); assert.equal(camera.cameraRequests(), 1);
 });
 
-test('a primitive choice made during Gaussian viewer initialization applies when it becomes ready', async t => {
-  let resolve;
-  const gaussianViewerGate = new Promise(done => { resolve = done; });
-  const camera = fixture(false, {gaussian: true, gaussianViewerGate}); t.after(() => { resolve(); camera.cleanup(); });
-  camera.selectPrimitive(1);
-  camera.tap(); await waitFor(() => camera.generated() === 1);
-  assert.deepEqual(camera.primitiveLevels(), []);
-  camera.selectPrimitive(3); resolve();
-  await waitFor(() => camera.primitiveLevels().length === 1);
-  assert.deepEqual(camera.primitiveLevels(), [{kind: 'gaussian', level: 3}]);
-  assert.equal(camera.harness.mode, 'done');
-});
-
-test('local fallback receives primitive choices immediately and keeps the choice after retaking', async t => {
+test('double tapping the result returns to a live camera', async t => {
   const camera = fixture(false); t.after(camera.cleanup);
-  camera.selectQuality(0); camera.selectPrimitive(2);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
-  assert.deepEqual(camera.primitiveLevels(), [{kind: 'local', level: 2}]);
-  camera.selectPrimitive(3);
-  assert.deepEqual(camera.primitiveLevels().at(-1), {kind: 'local', level: 3});
-  await camera.harness.retake();
-  assert.equal(camera.harness.primitive, 3);
-  assert.equal(camera.slider('left').level, 3);
-  camera.tap(); await waitFor(() => camera.generated() === 2 && camera.harness.mode === 'done');
-  assert.deepEqual(camera.primitiveLevels().at(-1), {kind: 'local', level: 3});
-  assert.deepEqual(camera.gaussianResolutions(), []);
-  assert.equal(camera.harness.quality, 0);
+  for (const time of [0, 100]) { camera.advancePointer(time); camera.harness.artDown(camera.point(1, 100)); camera.advancePointer(50); camera.harness.artUp(camera.point(1, 100)); }
+  await waitFor(() => camera.harness.mode === 'camera' && camera.previewSource() === camera.video);
+  assert.equal(camera.harness.draft, null);
 });
 
-test('primitive rail persists its own level and restores it independently of density', t => {
-  const storage = new Map([['entropi-quality', '3'], ['entropi-primitive', '2']]);
-  const camera = fixture(false, {storage}); t.after(camera.cleanup);
-  assert.equal(camera.harness.primitive, 2);
-  assert.equal(camera.slider('left').level, 2);
-  assert.equal(camera.harness.quality, 3);
-  camera.selectPrimitive(1);
-  assert.equal(storage.get('entropi-primitive'), '1');
-  assert.equal(storage.get('entropi-quality'), '3');
-  const restored = fixture(false, {storage}); t.after(restored.cleanup);
-  assert.equal(restored.harness.primitive, 1);
-  assert.equal(restored.slider('left').level, 1);
-  assert.equal(restored.harness.quality, 3);
-});
-
-test('unmount disposes both edge controls', () => {
-  const camera = fixture(false);
-  assert.ok(camera.slider('left'));
-  assert.ok(camera.slider('right'));
-  camera.cleanup();
-  assert.equal(camera.slider('left').disposed, true);
-  assert.equal(camera.slider('right').disposed, true);
-});
-
-test('Shadow failure identifies on-device reconstruction as a reserve', async t => {
-  const camera = fixture(false); t.after(camera.cleanup);
-  camera.selectQuality(1);
-  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
-  assert.deepEqual(camera.gaussianResolutions(), [336]);
-  assert.match(camera.harness.announcement, /reserve etter at Shadow ikkje svara/);
-});
-
-test('shake while Gaussian inference is pending prevents a late model and print from returning', async t => {
-  let resolve;
-  const gaussianGate = new Promise(done => {resolve = done;});
-  const camera = fixture(true, {gaussian: true, gaussianGate, motionPermission: 'direct'}); t.after(camera.cleanup);
-  camera.tap(); await waitFor(() => camera.harness.printer.ready); camera.tap();
-  await waitFor(() => camera.harness.mode === 'working'); camera.shake(); resolve();
-  await new Promise(done => setTimeout(done, 10));
-  assert.equal(camera.harness.mode, 'camera'); assert.equal(camera.generated(), 0); assert.equal(camera.writes.length, 0);
-});
-
-test('holding the actual shutter prints one panorama on release', async t => {
+test('holding the actual shutter develops and prints one panorama on release', async t => {
   const camera = fixture(); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.printer.ready);
   camera.begin(); await waitFor(() => camera.harness.mode === 'recording');
   assert.equal(camera.writes.length, 0); camera.end();
   await waitFor(() => camera.harness.mode === 'done' && !camera.harness.printer.busy);
-  assert.ok(camera.stitchedFrames() >= 3); assert.equal(camera.generated(), 1);
+  assert.ok(camera.stitchedFrames() >= 3); assert.equal(camera.estimates(), 1);
   assert.deepEqual(joinBytes(camera.writes), camera.paper);
 });
 
-test('shake clears the displayed cloud, while a committed print survives clearing', async t => {
+test('shake clears the displayed image, while a committed print survives clearing', async t => {
   const camera = fixture(true, { motionPermission: 'direct' }); t.after(camera.cleanup);
   camera.tap(); await waitFor(() => camera.harness.printer.ready);
   const start = camera.harness.printer.start.bind(camera.harness.printer);
@@ -333,14 +223,13 @@ test('shake clears the displayed cloud, while a committed print survives clearin
   camera.harness.printer.suspend();
   camera.tap(); await waitFor(() => camera.harness.mode === 'done');
   assert.equal(camera.harness.printer.queue.length, 1); assert.equal(camera.writes.length, 0);
-  camera.shake(); assert.equal(camera.harness.mode, 'camera'); assert.equal(camera.disposedViews(), 1);
-  assert.equal(camera.harness.draft, null); assert.equal(camera.harness.download, ''); assert.equal(camera.previewSource(), null);
+  camera.shake(); assert.equal(camera.harness.mode, 'camera');
+  assert.equal(camera.harness.draft, null); assert.equal(camera.previewSource(), null);
   await waitFor(() => camera.previewSource() === camera.video);
   assert.equal(camera.harness.printer.queue.length, 1);
   camera.harness.printer.start = start;
   await camera.harness.printer.start(); await waitFor(() => camera.writes.length && !camera.harness.printer.busy);
   assert.deepEqual(joinBytes(camera.writes), camera.paper);
-  camera.shake(); assert.equal(camera.harness.mode, 'camera'); assert.equal(camera.disposedViews(), 1);
 });
 
 test('shake aborts a held draft and its release does not capture or print it', async t => {
@@ -348,10 +237,10 @@ test('shake aborts a held draft and its release does not capture or print it', a
   camera.tap(); await waitFor(() => camera.harness.printer.ready);
   camera.begin(); await waitFor(() => camera.harness.mode === 'recording');
   camera.shake(); assert.equal(camera.harness.mode, 'camera'); camera.end();
-  assert.equal(camera.generated(), 0); assert.equal(camera.writes.length, 0);
+  assert.equal(camera.estimates(), 0); assert.equal(camera.writes.length, 0);
   await waitFor(() => camera.cameraRequests() >= 2 && camera.previewSource() === camera.video);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done' && !camera.harness.printer.busy);
-  assert.equal(camera.generated(), 1); assert.deepEqual(joinBytes(camera.writes), camera.paper);
+  assert.equal(camera.estimates(), 1); assert.deepEqual(joinBytes(camera.writes), camera.paper);
 });
 
 test('shake during depth inference prevents a late result or print from returning', async t => {
@@ -362,16 +251,16 @@ test('shake during depth inference prevents a late result or print from returnin
   camera.tap(); await waitFor(() => camera.harness.mode === 'working');
   camera.shake(); assert.equal(camera.harness.mode, 'camera'); resolve();
   await new Promise(done => setTimeout(done, 10));
-  assert.equal(camera.generated(), 0); assert.equal(camera.writes.length, 0);
+  assert.equal(camera.paints.length, 0); assert.equal(camera.writes.length, 0);
   camera.tap(); await waitFor(() => camera.harness.mode === 'done' && !camera.harness.printer.busy);
-  assert.equal(camera.generated(), 1); assert.deepEqual(joinBytes(camera.writes), camera.paper);
+  assert.equal(camera.paints.length, 1); assert.deepEqual(joinBytes(camera.writes), camera.paper);
 });
 
 test('the same invisible shutter handles Bluetooth and iOS motion permission once before printing', async t => {
   const camera = fixture(true, { motionPermission: 'granted' }); t.after(camera.cleanup);
   camera.tap(); assert.equal(camera.requested.length, 1); assert.equal(camera.motionRequests(), 0);
   await waitFor(() => camera.harness.printer.ready);
-  camera.tap(); assert.equal(camera.motionRequests(), 1); assert.equal(camera.generated(), 0);
+  camera.tap(); assert.equal(camera.motionRequests(), 1); assert.equal(camera.estimates(), 0);
   await new Promise(done => setTimeout(done, 0));
   camera.tap(); await waitFor(() => camera.harness.mode === 'done' && !camera.harness.printer.busy);
   assert.deepEqual(joinBytes(camera.writes), camera.paper);

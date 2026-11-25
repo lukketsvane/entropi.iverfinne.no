@@ -42,3 +42,4 @@
 @keyframes entropi-flow {from{transform:translateX(-110%)}to{transform:translateX(460%)}}
 @keyframes entropi-pulse {50%{opacity:.25}}
 @media(prefers-reduced-motion:reduce){.studio .record-light,.studio .progress.indeterminate i{animation:none}}
+.studio .art canvas {object-fit:contain}

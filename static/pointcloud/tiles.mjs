@@ -1,4 +1,5 @@
 import {inferenceSize} from './math.mjs';
+const TILE=512;
 /** @typedef {{data:Uint8ClampedArray,width:number,height:number}} Pixels */
 /** @param {Pixels} pixels @param {number} width @param {number} height @param {{x:number,y:number,width:number,height:number}} [crop] */
 export function resizePixels(pixels,width,height,crop={x:0,y:0,width:pixels.width,height:pixels.height}) {
@@ -51,12 +52,12 @@ export async function estimateImageDepth(pixels,estimator,onProgress,current=()=
     const size=inferenceSize(pixels.width,pixels.height),input=resizePixels(pixels,size.width,size.height);
     return estimator.estimate(input.data,input.width,input.height,onProgress);
   }
-  const scale=Math.min(448/Math.min(pixels.width,pixels.height),2048/Math.max(pixels.width,pixels.height));
+  const scale=Math.min(TILE/Math.min(pixels.width,pixels.height),2048/Math.max(pixels.width,pixels.height));
   const input=resizePixels(pixels,Math.round(pixels.width*scale),Math.round(pixels.height*scale));
   const tiles=depthTiles(input.width,input.height),sums=new Float32Array(input.width*input.height),weights=new Float32Array(sums.length);
   for(const [i,tile] of tiles.entries()) {
     if(!current())throw new DOMException('Avbrote.','AbortError');
-    const size=inferenceSize(tile.width,tile.height),cropped=resizePixels(input,size.width,size.height,tile);
+    const size=inferenceSize(tile.width,tile.height,TILE),cropped=resizePixels(input,size.width,size.height,tile);
     const result=await estimator.estimate(cropped.data,size.width,size.height,progress=>onProgress({...progress}));
     const resized=new Float32Array(tile.width*tile.height);
     for(let y=0;y<tile.height;y++)for(let x=0;x<tile.width;x++) {

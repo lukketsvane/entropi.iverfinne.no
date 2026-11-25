@@ -15,7 +15,7 @@ test('portrait, landscape and square captures keep their aspect and fit the mobi
   for (const [width,height] of [[630,840],[840,630],[840,840],[840,200]]) {
     const size = inferenceSize(width,height);
     assert.equal(size.width%32,0); assert.equal(size.height%32,0);
-    assert.equal(Math.max(size.width,size.height),448);
+    assert.equal(Math.max(size.width,size.height),768);
     if (width !== height) assert.equal(size.width>size.height,width>height);
     const stride = pointStride(width,height);
     assert.ok(Math.ceil(width/stride)*Math.ceil(height/stride)<=42000);

@@ -39,3 +39,15 @@ export function cloudPrintJob(source) {
   const cropped = image.data.subarray(first * WIDTH * 4, (last + 1) * WIDTH * 4);
   return buildPrintJob(ditherCloudRGBA(cropped, WIDTH, last - first + 1));
 }
+
+/** The visible depth artwork, dithered as shown: white stays paper, black becomes ink.
+ * @param {HTMLCanvasElement} source */
+export function artPrintJob(source) {
+  const height = Math.max(1, Math.min(1024, Math.round(WIDTH * source.height / source.width)));
+  const canvas = document.createElement('canvas');
+  canvas.width = WIDTH; canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Kunne ikkje klargjere utskrifta.');
+  context.drawImage(source, 0, 0, WIDTH, height);
+  return buildPrintJob(ditherRGBA(context.getImageData(0, 0, WIDTH, height).data, WIDTH, height));
+}

@@ -2,19 +2,20 @@ export type QualityLevel = 0 | 1 | 2 | 3;
 
 type Options = {
   edge?: 'left' | 'right';
-  initialLevel?: QualityLevel;
-  onLevel(level: QualityLevel): void;
-  onActive?(active: boolean, level: QualityLevel): void;
+  levels?: number;
+  initialLevel?: number;
+  onLevel(level: number): void;
+  onActive?(active: boolean, level: number): void;
 };
 
 type Slider = {
   edge: 'left' | 'right';
-  level: QualityLevel;
-  onLevel(level: QualityLevel): void;
-  onActive(active: boolean, level: QualityLevel): void;
+  levels: number;
+  level: number;
+  onLevel(level: number): void;
+  onActive(active: boolean, level: number): void;
 };
 
-const clampLevel = (value: number) => Math.max(0, Math.min(3, value)) as QualityLevel;
 const surfaces = new WeakMap<Window, ReturnType<typeof listenToEdges>>();
 
 // Both rails share one touch session. A second finger must not reach the viewer
@@ -29,7 +30,7 @@ function listenToEdges(surface: Window) {
     event.stopImmediatePropagation();
   };
   const select = (slider: Slider, event: PointerEvent) => {
-    const next = clampLevel(3 - Math.floor(event.clientY / Math.max(1, surface.innerHeight) * 4));
+    const next = Math.max(0, Math.min(slider.levels - 1, slider.levels - 1 - Math.floor(event.clientY / Math.max(1, surface.innerHeight) * slider.levels)));
     if (next === slider.level) return false;
     slider.level = next;
     slider.onLevel(next);
@@ -99,15 +100,15 @@ function listenToEdges(surface: Window) {
   };
 }
 
-export function attachEdgeQualitySlider(surface: Window, {edge = 'right', initialLevel = 2, onLevel, onActive = () => {}}: Options) {
-  const slider: Slider = {edge, level: initialLevel, onLevel, onActive};
+export function attachEdgeQualitySlider(surface: Window, {edge = 'right', levels = 4, initialLevel = 2, onLevel, onActive = () => {}}: Options) {
+  const slider: Slider = {edge, levels, level: initialLevel, onLevel, onActive};
   const shared = surfaces.get(surface) ?? listenToEdges(surface);
   surfaces.set(surface, shared);
   shared.add(slider);
   let disposed = false;
   return {
     get level() { return slider.level; },
-    setLevel(next: QualityLevel) { slider.level = next; },
+    setLevel(next: number) { slider.level = next; },
     dispose() {
       if (disposed) return;
       disposed = true;
