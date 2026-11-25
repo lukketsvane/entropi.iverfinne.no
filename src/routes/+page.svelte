@@ -9,6 +9,7 @@
 	import { PX10Printer } from '../lib/print/printer.mjs';
 	import { artPrintJob } from '../lib/print/cloud-raster.mjs';
 	import { normalizeDepth, prepareToneDepth, VATHOGRAPHY_PRESETS } from '../lib/vathography.mjs';
+	import { createGallery } from '../lib/gallery.mjs';
 	import { estimateImageDepth } from '../../static/pointcloud/tiles.mjs';
 	import { captureSnapshot } from '../../static/pointcloud/panorama.mjs';
 	import '../lib/pointcloud/studio.css';
@@ -40,6 +41,12 @@
 	let progress = $state<number | null>(null);
 	let captured: Pixels | null = null;
 	let tone: ReturnType<typeof prepareToneDepth> | null = null;
+	let frame: { width: number; height: number; mask: Uint8Array | null } | null = null;
+	const gallery = createGallery();
+	let galleryOpen = $state(false);
+	let galleryItems = $state<{ id: string; created: number; url: string }[]>([]);
+	let currentId: string | null = null;
+	let saveTimer: ReturnType<typeof setTimeout> | undefined;
 	let paintFrame = 0;
 	let disposed = false;
 	let generation = 0;
@@ -60,22 +67,91 @@
 		if (video) video.srcObject = null;
 	}
 	function clearResult() {
-		tone = null;
+		if (saveTimer) { if (paintFrame) paint(); saveTone(); }
+		tone = null; frame = null; currentId = null;
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
 		artPointers.clear(); artGesture = null; pinchGap = 0;
 	}
 	function paint() {
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
-		if (!tone || !captured || !art) return;
-		const { data, width, height } = captured;
+		if (!tone || !frame || !art) return;
+		const { width, height, mask } = frame;
 		const pixels = tone({ preset, position, width: bandWidth, outputWidth: width, outputHeight: height });
 		// Panorama areas without a photographed view stay black.
-		for (let i = 3; i < pixels.length; i += 4) if (data[i] < 128) pixels[i - 3] = pixels[i - 2] = pixels[i - 1] = 0;
+		if (mask) for (let i = 0; i < mask.length; i++) if (mask[i]) pixels[i * 4] = pixels[i * 4 + 1] = pixels[i * 4 + 2] = 0;
 		if (art.width !== width || art.height !== height) { art.width = width; art.height = height; }
 		art.getContext('2d')?.putImageData(new ImageData(pixels, width, height), 0, 0);
 	}
 	function schedulePaint() {
 		if (!paintFrame) paintFrame = requestAnimationFrame(paint);
+		if (currentId) { clearTimeout(saveTimer); saveTimer = setTimeout(saveTone, 600); }
+	}
+	function saveTone() {
+		clearTimeout(saveTimer); saveTimer = undefined;
+		const id = currentId, values = recipe();
+		if (id) void thumbnail().then(image => gallery.update(id, values, image)).catch(() => {});
+	}
+	function recipe() {
+		return { preset, position, width: bandWidth };
+	}
+	function maskFor(pixels: Pixels) {
+		let mask: Uint8Array | null = null;
+		for (let i = 0; i < pixels.width * pixels.height; i++) if (pixels.data[i * 4 + 3] < 128) (mask ??= new Uint8Array(pixels.width * pixels.height))[i] = 1;
+		return mask;
+	}
+	function thumbnail(): Promise<Blob | null> {
+		const side = Math.min(art.width, art.height), canvas = document.createElement('canvas');
+		canvas.width = canvas.height = 240;
+		canvas.getContext('2d')?.drawImage(art, (art.width - side) / 2, (art.height - side) / 2, side, side, 0, 0, 240, 240);
+		return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .8));
+	}
+	async function archive(id: number, field: Float32Array, depthWidth: number, depthHeight: number) {
+		if (!frame) return;
+		try {
+			const item = { ...frame, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth, depthHeight, recipe: recipe() };
+			const saved = await gallery.save(item, await thumbnail());
+			if (id === generation && mode === 'done') currentId = saved;
+		} catch { /* The image stays usable without local storage. */ }
+	}
+	function releaseGallery() {
+		for (const item of galleryItems) URL.revokeObjectURL(item.url);
+		galleryItems = [];
+	}
+	async function openGallery() {
+		if (galleryOpen || (mode !== 'camera' && mode !== 'done')) return;
+		clearTapBatch(); recorder.abort();
+		galleryOpen = true;
+		if (mode === 'camera') { stopCamera(); preview?.clear(); }
+		try {
+			const entries = await gallery.list();
+			if (!galleryOpen) return;
+			galleryItems = entries.filter(entry => entry.thumbnail).map(entry => ({ id: entry.id, created: entry.created, url: URL.createObjectURL(entry.thumbnail as Blob) }));
+			announcement = galleryItems.length ? `Galleri med ${galleryItems.length} djupnebilete.` : 'Galleriet er tomt.';
+		} catch { announcement = 'Galleriet er ikkje tilgjengeleg i denne nettlesaren.'; }
+	}
+	function closeGallery() {
+		if (!galleryOpen) return;
+		galleryOpen = false; releaseGallery();
+		if (mode === 'camera') void startCamera();
+	}
+	async function openItem(id: string) {
+		const opening = ++generation;
+		try {
+			const item = await gallery.get(id);
+			if (!item || disposed || opening !== generation) return;
+			clearTapBatch(); recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera();
+			captured = null; captureJobId = ''; progress = null; lastTap = null;
+			frame = { width: item.width, height: item.height, mask: item.mask ?? null };
+			tone = prepareToneDepth(Float32Array.from(item.depth, value => value / 65535), item.depthWidth, item.depthHeight);
+			preset = item.recipe.preset; presetSlider?.setLevel(preset); position = item.recipe.position; bandWidth = item.recipe.width;
+			currentId = id; mode = 'done';
+			galleryOpen = false; releaseGallery();
+			if (preview) { preview.active = false; preview.source = null; }
+			await tick();
+			if (disposed || opening !== generation) return;
+			paint();
+			announcement = `${VATHOGRAPHY_PRESETS[preset].label}. Opna frå galleriet.`;
+		} catch { announcement = 'Kunne ikkje opne biletet frå galleriet.'; }
 	}
 	function selectPreset(level: number) {
 		preset = level;
@@ -108,7 +184,7 @@
 		return true;
 	}
 	async function startCamera() {
-		if (disposed || document.hidden || mode !== 'camera' || stream || !video || !navigator.mediaDevices?.getUserMedia) return;
+		if (disposed || document.hidden || mode !== 'camera' || galleryOpen || stream || !video || !navigator.mediaDevices?.getUserMedia) return;
 		const attempt = ++cameraAttempt;
 		try {
 			const next = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
@@ -251,11 +327,14 @@
 			if (disposed || id !== generation) return;
 			// Free the model's memory between photographs.
 			estimator.dispose();
-			tone = prepareToneDepth(normalizeDepth(prediction.depth), prediction.width, prediction.height);
+			const field = normalizeDepth(prediction.depth);
+			tone = prepareToneDepth(field, prediction.width, prediction.height);
+			frame = { width: pixels.width, height: pixels.height, mask: maskFor(pixels) };
 			mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
 			await tick();
 			if (disposed || id !== generation) return;
 			paint();
+			void archive(id, field, prediction.width, prediction.height);
 			announcement = `${VATHOGRAPHY_PRESETS[preset].label}. Djupna er estimert med Depth Pro 2. Dra vassrett for å flytte djupneområdet, og knip for breidda. Dra langs høgre kant for fem uttrykk. Hald inne for utskrift. Dobbelttrykk for eit nytt bilete.`;
 			queueCurrentPrint();
 		} catch (error) { fail(error, id); }
@@ -321,6 +400,7 @@
 		generation++;
 		clearTapBatch();
 		recorder.abort(); estimator.dispose(); stopPanorama(); clearResult(); stopCamera(); captured = null;
+		galleryOpen = false; releaseGallery();
 		captureJobId = '';
 		capturePointer = null;
 		progress = null; lastTap = null; mode = 'camera';
@@ -387,7 +467,8 @@
 		if (artGesture?.id === event.pointerId) artGesture = null;
 	}
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape') void retake();
+		if (event.key !== 'Escape') return;
+		if (galleryOpen) closeGallery(); else void retake();
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
@@ -428,7 +509,7 @@
 			restorePrinter();
 			if (updated.current && mode === 'camera') { location.reload(); return; }
 			resumeTimer = setTimeout(() => {
-				if (mode !== 'camera') return;
+				if (mode !== 'camera' || galleryOpen) return;
 				if (stream && !stream.getVideoTracks().some(track => track.readyState === 'live')) stopCamera();
 				void startCamera();
 			}, 300);
@@ -443,7 +524,7 @@
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
 			window.removeEventListener('beacio:ready', restorePrinter); window.removeEventListener('beacio:extension:ready', restorePrinter);
 			printerChecks.forEach(clearTimeout); printer?.removeEventListener('status', printStatus); printer?.dispose(); printer = null;
-			estimator.dispose(); stopPanorama(); stopCamera(); preview?.dispose(); clearResult(); captured = null;
+			estimator.dispose(); stopPanorama(); stopCamera(); preview?.dispose(); clearResult(); captured = null; releaseGallery();
 		};
 	});
 </script>
@@ -486,6 +567,19 @@
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
 		<a class="access-control download" href="/" download="entropi-djupn.png" aria-label="Last ned djupnebiletet" onclick={saveArt}><i class="download-mark" aria-hidden="true"></i></a>
+	{/if}
+	{#if (mode === 'camera' || mode === 'done') && !galleryOpen}
+		<button class="access-control gallery-control" type="button" aria-label="Opne galleriet" onclick={openGallery}><i class="grid-mark" aria-hidden="true"></i></button>
+	{/if}
+	{#if galleryOpen}
+		<div class="gallery" role="dialog" aria-modal="true" aria-label="Galleri">
+			<button class="gallery-close" type="button" aria-label="Lukk galleriet" onclick={closeGallery}><i class="plus close" aria-hidden="true"></i></button>
+			<div class="gallery-grid">
+				{#each galleryItems as item (item.id)}
+					<button type="button" aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}`} onclick={() => openItem(item.id)}><img src={item.url} alt="" /></button>
+				{/each}
+			</div>
+		</div>
 	{/if}
 	<input bind:this={photoInput} type="file" accept="image/*" multiple onchange={capture} oncancel={() => void startCamera()} tabindex="-1" aria-label="Kamerabilete" />
 	<input class="sr-only" type="range" min="0" max="4" step="1" value={preset} aria-label="Djupneuttrykk" aria-valuetext={VATHOGRAPHY_PRESETS[preset].label} oninput={event => selectPreset(Number(event.currentTarget.value))} />

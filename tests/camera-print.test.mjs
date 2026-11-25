@@ -9,11 +9,14 @@ import { captureSnapshot } from '../static/pointcloud/panorama.mjs';
 import { WIDTH, PRINTER_NAME, buildPrintJob, joinBytes } from '../src/lib/print/px10-protocol.mjs';
 import { PX10Printer } from '../src/lib/print/printer.mjs';
 import * as vathography from '../src/lib/vathography.mjs';
+import { createGallery } from '../src/lib/gallery.mjs';
+import { memoryIndexedDB } from './helpers/indexeddb.mjs';
 
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
 const compiled = ts.transpileModule(script + `
 export const harness = {
-  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset,
+  beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys,
+  get galleryOpen(){ return galleryOpen; }, get galleryItems(){ return galleryItems; }, get currentId(){ return currentId; },
   get mode(){ return mode; }, get printer(){ return printer; }, get announcement(){ return announcement; },
   get preset(){ return preset; }, get position(){ return position; }, get bandWidth(){ return bandWidth; }, get draft(){ return captured; },
   mount(elements){ video=elements.video; finder=elements.finder; art=elements.art; photoInput=elements.input; }
@@ -23,7 +26,7 @@ const waitFor = async predicate => {
   while (!predicate()) { if (Date.now() > until) throw new Error('Timed out'); await new Promise(resolve => setTimeout(resolve, 2)); }
 };
 
-function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, depthError = null, changingFrames = false, storage = null } = {}) {
+function fixture(withBluetooth = true, { motionPermission = 'unsupported', depthGate = null, depthError = null, changingFrames = false, storage = null, database = memoryIndexedDB() } = {}) {
   const writes = [], requested = [], paints = [], paper = buildPrintJob(new Uint8Array(WIDTH * 2));
   const device = new EventTarget(); device.name = PRINTER_NAME; device.id = 'px10';
   const notifier = new EventTarget(); notifier.startNotifications = async () => notifier;
@@ -42,7 +45,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   const video = { readyState: 2, videoWidth: 4, videoHeight: 4, srcObject: null, play: async () => {} };
   const art = { width: 1, height: 1, clientWidth: 100, getContext: () => ({ putImageData(image){ paints.push(image); } }) };
   const document = Object.assign(new EventTarget(), {
-    hidden: false, visibilityState: 'visible', createElement: () => ({ width: 4, height: 4, getContext: () => ({
+    hidden: false, visibilityState: 'visible', createElement: () => ({ width: 4, height: 4, toBlob: callback => callback(new Blob(['thumbnail'])), getContext: () => ({
       fillRect(){}, drawImage(){}, putImageData(){}, getImageData: () => ({ width: 4, height: 4, data: new Uint8ClampedArray(64).fill(changingFrames ? 100 + (++samples) * 10 : 180) })
     }) })
   });
@@ -69,6 +72,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     '../lib/print/printer.mjs': { PX10Printer: CameraPrinter },
     '../lib/print/cloud-raster.mjs': { artPrintJob: source => { assert.equal(source, art); return paper; } },
     '../lib/vathography.mjs': vathography,
+    '../lib/gallery.mjs': { createGallery: () => createGallery(database ?? undefined) },
     '../../static/pointcloud/tiles.mjs': { estimateImageDepth: async () => {
       if (depthGate) await depthGate;
       estimates++;
@@ -274,4 +278,45 @@ test('denied motion permission still permits tap capture and printing without an
   camera.tap(); await waitFor(() => camera.harness.mode === 'done' && !camera.harness.printer.busy);
   camera.shake(); assert.equal(camera.harness.mode, 'done'); assert.equal(camera.motionRequests(), 1);
   assert.deepEqual(joinBytes(camera.writes), camera.paper);
+});
+
+test('each developed image is kept in the gallery grid and reopens with its expression, without the model', async t => {
+  const database = memoryIndexedDB();
+  const camera = fixture(false, { database }); t.after(camera.cleanup);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.harness.currentId);
+  const count = camera.paints.length; camera.slider('right').select(3);
+  await waitFor(() => camera.paints.length > count);
+  const chosen = grey(camera.paints.at(-1));
+  await camera.harness.retake(); assert.equal(camera.harness.mode, 'camera');
+  await camera.harness.openGallery();
+  assert.equal(camera.harness.galleryOpen, true); assert.equal(camera.harness.galleryItems.length, 1);
+  assert.match(camera.harness.galleryItems[0].url, /^blob:/);
+  await camera.harness.openItem(camera.harness.galleryItems[0].id);
+  assert.equal(camera.harness.mode, 'done'); assert.equal(camera.harness.galleryOpen, false);
+  assert.equal(camera.harness.preset, 3); assert.equal(camera.slider('right').level, 3);
+  assert.deepEqual(grey(camera.paints.at(-1)), chosen);
+  assert.equal(camera.estimates(), 1); assert.equal(camera.writes.length, 0);
+  const next = fixture(false, { database }); t.after(next.cleanup);
+  await next.harness.openGallery(); assert.equal(next.harness.galleryItems.length, 1);
+});
+
+test('the gallery opened from the camera closes back to a live camera, and Escape closes it first', async t => {
+  const camera = fixture(false); t.after(camera.cleanup);
+  await waitFor(() => camera.previewSource() === camera.video);
+  await camera.harness.openGallery();
+  assert.equal(camera.harness.galleryOpen, true); assert.equal(camera.previewSource(), null);
+  assert.match(camera.harness.announcement, /tomt/);
+  camera.harness.keys({ key: 'Escape' });
+  assert.equal(camera.harness.galleryOpen, false); assert.equal(camera.harness.mode, 'camera');
+  await waitFor(() => camera.previewSource() === camera.video && camera.cameraRequests() === 2);
+});
+
+test('without local storage the camera still develops and prints, and the gallery says it is unavailable', async t => {
+  const camera = fixture(true, { database: null }); t.after(camera.cleanup);
+  camera.tap(); await waitFor(() => camera.harness.printer.ready);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done' && !camera.harness.printer.busy);
+  assert.deepEqual(joinBytes(camera.writes), camera.paper); assert.equal(camera.harness.currentId, null);
+  await camera.harness.openGallery();
+  assert.match(camera.harness.announcement, /ikkje tilgjengeleg/);
+  camera.harness.closeGallery(); assert.equal(camera.harness.mode, 'done');
 });

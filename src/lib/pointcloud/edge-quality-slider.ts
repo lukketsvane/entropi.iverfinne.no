@@ -48,7 +48,7 @@ function listenToEdges(surface: Window) {
       consume(event);
       return;
     }
-    if (!event.isPrimary || (event.target as Element | null)?.closest?.('.access-control')) return;
+    if (!event.isPrimary || (event.target as Element | null)?.closest?.('.access-control, .gallery')) return;
     const band = Math.max(24, surface.innerWidth * 0.07);
     const slider = [...sliders].find(({edge}) => edge === 'left'
       ? event.clientX >= 0 && event.clientX <= band
