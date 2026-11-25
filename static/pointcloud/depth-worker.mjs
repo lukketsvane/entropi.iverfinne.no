@@ -36,7 +36,7 @@ self.onmessage = async event => {
   running = true;
   let input, outputs;
   try {
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 14 || height < 14 || width > 420 || height > 420 || width % 14 || height % 14) throw new Error('Ugyldig storleik for djupnemodellen.');
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 32 || height < 32 || width > 448 || height > 448 || width % 32 || height % 32) throw new Error('Ugyldig storleik for djupnemodellen.');
     const pixels = normalizedImage(new Uint8ClampedArray(rgba), width, height);
     const session = await getSession(id);
     input = new Tensor('float32', pixels, [1, 3, height, width]);

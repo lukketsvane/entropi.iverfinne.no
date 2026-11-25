@@ -2,8 +2,8 @@
 /** @param {number} width @param {number} height */
 export function inferenceSize(width, height) {
   if (!(width > 0 && height > 0)) throw new Error('Ugyldig kamerabilete.');
-  const scale = 420 / Math.max(width, height);
-  return { width: Math.max(140, Math.round(width * scale / 14) * 14), height: Math.max(140, Math.round(height * scale / 14) * 14) };
+  const scale = 448 / Math.max(width, height);
+  return { width: Math.max(160, Math.round(width * scale / 32) * 32), height: Math.max(160, Math.round(height * scale / 32) * 32) };
 }
 
 /** @param {number} width @param {number} height @param {number} budget */

@@ -1,11 +1,15 @@
 {
-  "model": "Depth Anything V2 Small",
-  "repository": "onnx-community/depth-anything-v2-small",
-  "revision": "64fe43eba7f8a384b02fe3fadaa26cbba35548d8",
+  "model": "Depth Pro 2 S",
+  "repository": "apple-aiml-research/ml-depth-pro-2",
+  "revision": "aa389cbb0b74341664ed663a0966c859905cd6c0",
+  "checkpoint": {
+    "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-s-bgcc6f8bg3.pt",
+    "sha256": "23ce46c7b39678e2e9d6983fbcfa2366e0f691ffedc300f6cb3efa082f2fc590"
+  },
   "asset": {
-    "url": "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/64fe43eba7f8a384b02fe3fadaa26cbba35548d8/onnx/model_quantized.onnx",
-    "bytes": 27258801,
-    "sha256": "fcf51f1b230362b28690bb9d1809bf0431f29cad20534e3f589bd7285547f20d"
+    "url": "/pointcloud/models/depthpro2-s-w8.onnx",
+    "bytes": 36861506,
+    "sha256": "a25d58bfaf96e6ab2f01953b49d4fc37b9224c5f2d4c9b81e99ed8839b13ca03"
   },
   "runtime": {
     "version": "1.30.0",
@@ -13,5 +17,5 @@
     "bytes": 14239897,
     "sha256": "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2"
   },
-  "depth": "Estimated relative inverse depth; visible surfaces only, not metric."
+  "depth": "Focal-normalized inverse depth, used as relative depth; visible surfaces only."
 }

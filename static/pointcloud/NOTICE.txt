@@ -1,8 +1,11 @@
-Entropi photo-to-point-cloud uses Depth Anything V2 Small (Apache License 2.0)
-from onnx-community/depth-anything-v2-small, revision
-64fe43eba7f8a384b02fe3fadaa26cbba35548d8. The pinned quantized model is fetched
-from Hugging Face and verified against the SHA-256 in models/manifest.json.
-Model license: models/LICENSE.txt.
+Entropi photo-to-point-cloud uses Apple Depth Pro 2 S from
+apple-aiml-research/ml-depth-pro-2, revision
+aa389cbb0b74341664ed663a0966c859905cd6c0. The ONNX file is a derivative of the
+official checkpoint, exported by scripts/export-depth-pro-2.py with 8-bit
+weight-only MatMul quantization, self-hosted and verified against the SHA-256
+in models/manifest.json. The weights are licensed exclusively for
+non-commercial research under the Apple Machine Learning Research Model
+license: models/LICENSE.txt.
 
 ONNX Runtime Web 1.30.0 is MIT licensed. The JavaScript modules are vendored;
 the matching WASM binary is fetched from the pinned jsDelivr npm distribution

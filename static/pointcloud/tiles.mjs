@@ -51,7 +51,7 @@ export async function estimateImageDepth(pixels,estimator,onProgress,current=()=
     const size=inferenceSize(pixels.width,pixels.height),input=resizePixels(pixels,size.width,size.height);
     return estimator.estimate(input.data,input.width,input.height,onProgress);
   }
-  const scale=Math.min(420/Math.min(pixels.width,pixels.height),2048/Math.max(pixels.width,pixels.height));
+  const scale=Math.min(448/Math.min(pixels.width,pixels.height),2048/Math.max(pixels.width,pixels.height));
   const input=resizePixels(pixels,Math.round(pixels.width*scale),Math.round(pixels.height*scale));
   const tiles=depthTiles(input.width,input.height),sums=new Float32Array(input.width*input.height),weights=new Float32Array(sums.length);
   for(const [i,tile] of tiles.entries()) {
