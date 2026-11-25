@@ -101,8 +101,11 @@
 		clearTimeout(releaseTimer);
 		if (depthBusy) await new Promise<void>(resolve => { depthWaiters.push({ priority, resolve }); depthWaiters.sort((a, b) => b.priority - a.priority); });
 		depthBusy = true;
+		// Mark the run so a crash during depth is noticed on the next start.
+		try { window.localStorage?.setItem('entropi-depth-running', '1'); } catch {}
 		try { return await task(); }
 		finally {
+			try { window.localStorage?.removeItem('entropi-depth-running'); } catch {}
 			const next = depthWaiters.shift();
 			if (next) next.resolve();
 			else {
@@ -846,6 +849,16 @@
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
+		try {
+			// The page died during a depth run last time: step the GPU model down, then to the CPU model.
+			let crashes = Number(window.localStorage?.getItem('entropi-depth-crashes')) || 0;
+			if (window.localStorage?.getItem('entropi-depth-running')) {
+				crashes++;
+				window.localStorage.setItem('entropi-depth-crashes', String(crashes));
+				window.localStorage.removeItem('entropi-depth-running');
+			}
+			estimator.gpuLimit = crashes >= 2 ? 0 : crashes === 1 ? 512 : Infinity;
+		} catch {}
 		try {
 			const saved = window.localStorage?.getItem('entropi-vatho');
 			if (saved && /^[0-4]$/.test(saved)) preset = Number(saved);

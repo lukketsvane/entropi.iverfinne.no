@@ -94,15 +94,17 @@ async function infer(current, rgba, width, height) {
 }
 
 self.onmessage = async event => {
-  const { id, width, height, rgba } = event.data;
+  const { id, width, height, rgba, gpuLimit = Infinity } = event.data;
   if (running) { self.postMessage({ id, type: 'error', message: 'Djupneberekninga er oppteken.' }); return; }
   running = true;
   try {
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 32 || height < 32 || width > 1536 || height > 1536 || width % 32 || height % 32) throw new Error('Ugyldig storleik for djupnemodellen.');
     const pixels = new Uint8ClampedArray(rgba);
-    let current = await engine(id), result;
+    let current = await engine(id, gpuLimit <= 0), result;
+    if (current.gpu && gpuLimit <= 0) { await current.session.release?.().catch(() => {}); enginePromise = null; current = await engine(id, true); }
+    const max = current.gpu ? Math.min(current.max, gpuLimit) : current.max;
     progress(id, 'estimating');
-    try { result = await infer(current, pixels, width, height); }
+    try { result = await infer({ ...current, max }, pixels, width, height); }
     catch (error) {
       if (!current.gpu) throw error;
       // A GPU without enough memory still gets an image from the smaller CPU model.

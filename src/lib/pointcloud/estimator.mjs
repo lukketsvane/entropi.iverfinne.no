@@ -10,6 +10,8 @@ export class DepthEstimator {
     /** @type {{id: number, resolve: (value: DepthPrediction) => void, reject: (error: unknown) => void, onProgress: (progress: Progress) => void, timer: ReturnType<typeof setTimeout>} | null} */
     this.pending = null;
     this.sequence = 0;
+    /** Largest GPU input in px; 0 keeps depth on the CPU model. */
+    this.gpuLimit = Infinity;
   }
   /**
    * @param {Uint8ClampedArray} rgba
@@ -39,7 +41,7 @@ export class DepthEstimator {
       try {
         // Transfer a dedicated image, preserving the captured photo for its original colours.
         const copy = new Uint8ClampedArray(rgba);
-        worker.postMessage({ id, rgba: copy.buffer, width, height }, [copy.buffer]);
+        worker.postMessage({ id, rgba: copy.buffer, width, height, gpuLimit: this.gpuLimit }, [copy.buffer]);
       } catch (error) { this.finish(error); this.stopWorker(); }
     });
   }

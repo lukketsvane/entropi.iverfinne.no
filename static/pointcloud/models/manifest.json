@@ -21,7 +21,7 @@
   "webgpu": {
     "enabled": true,
     "model": "Depth Pro 2 B",
-    "max": 1024,
+    "max": 768,
     "checkpoint": {
       "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-b-xb7m9egktw.pt",
       "sha256": "172a7bf6c3e2078a31b56f47148f861e25961f5bb0247b999fd7bad9f1036aae"

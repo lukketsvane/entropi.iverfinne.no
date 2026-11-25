@@ -45,7 +45,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   class CameraPrinter extends PX10Printer {
     constructor(){ super({ bluetooth: () => api, storage: () => undefined, delay: 0 }); }
   }
-  let mount, cleanup, preview, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, samples = 0, estimates = 0;
+  let estimatorInstance, mount, cleanup, preview, motionTime = 0, motionRequests = 0, stitchedFrames = 0, cameraRequests = 0, pointerTime = 0, samples = 0, estimates = 0;
   const sliders = new Map();
   const track = { stop(){}, readyState: 'live' }, stream = { getTracks: () => [track], getVideoTracks: () => [track] };
   const video = { readyState: 2, videoWidth: 4, videoHeight: 4, srcObject: null, play: async () => {} };
@@ -56,7 +56,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     }) })
   });
   const window = Object.assign(new EventTarget(), { innerWidth: 390, innerHeight: 844 });
-  if (storage) window.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  if (storage) window.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key) };
   if (motionPermission !== 'unsupported') window.DeviceMotionEvent = motionPermission === 'direct' ? {} : {
     requestPermission: () => { motionRequests++; return Promise.resolve(motionPermission); }
   };
@@ -66,7 +66,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
   const modules = {
     svelte: { onMount: callback => { mount = callback; }, tick: async () => {} },
     '$app/state': { updated: { current: false } },
-    '../lib/pointcloud/estimator.mjs': { DepthEstimator: class { dispose(){} } },
+    '../lib/pointcloud/estimator.mjs': { DepthEstimator: class { constructor(){ this.gpuLimit = Infinity; estimatorInstance = this; } dispose(){} } },
     '../lib/pointcloud/edge-quality-slider': { attachEdgeQualitySlider: (_surface, options) => {
       const slider = {options, level: options.initialLevel, setLevel(level){ this.level = level; }, select(level){ options.onLevel(level); }, dispose(){}};
       sliders.set(options.edge ?? 'right', slider);
@@ -114,6 +114,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     }
   };
   const point = (pointerId, clientX, clientY = 200, isPrimary = pointerId === 1) => ({ pointerId, clientX, clientY, isPrimary });
+  Object.defineProperty(exports.harness, 'gpuLimit', { get: () => estimatorInstance.gpuLimit });
   return { harness: exports.harness, tap, downloads, shared, requested, writes, paper, paints, art, slider: edge => sliders.get(edge),
     enableBluetooth: () => { api = bluetooth; }, advancePointer: ms => { pointerTime += ms; }, point,
     holdResult: (move = 0) => {
@@ -591,4 +592,17 @@ test('the WebGPU model is enabled by the manifest, which can switch it off witho
   const manifest = JSON.parse(fs.readFileSync('static/pointcloud/models/manifest.json', 'utf8'));
   assert.equal(manifest.webgpu.enabled, true);
   assert.match(fs.readFileSync('static/pointcloud/depth-worker.mjs', 'utf8'), /spec\.enabled !== true/);
+});
+
+test('a crash during depth steps the GPU model down on the next start, then moves to the CPU model', async t => {
+  const storage = new Map();
+  const first = fixture(false, { storage }); t.after(first.cleanup);
+  first.tap(); await waitFor(() => first.harness.mode === 'done');
+  assert.equal(storage.has('entropi-depth-running'), false, 'A finished run clears its mark');
+  storage.set('entropi-depth-running', '1');
+  const second = fixture(false, { storage }); t.after(second.cleanup);
+  assert.equal(second.harness.gpuLimit, 512); assert.equal(storage.get('entropi-depth-crashes'), '1');
+  storage.set('entropi-depth-running', '1');
+  const third = fixture(false, { storage }); t.after(third.cleanup);
+  assert.equal(third.harness.gpuLimit, 0);
 });
