@@ -1,3 +1,5 @@
+import { boxBlur } from './finish.mjs';
+
 export const VATHOGRAPHY_PRESETS = Object.freeze([
   Object.freeze({id:'band',label:'Lysband'}),
   Object.freeze({id:'mist',label:'Dis'}),
@@ -57,7 +59,20 @@ const toneLuts=curves.map(knots=>{const evaluate=pchip(knots);return Float32Arra
  * @param {ArrayLike<number>} depth @param {number} width @param {number} height */
 export function prepareToneDepth(depth,width,height){
   if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||depth?.length!==width*height)throw new Error('Ugyldig djupnekart.');
-  return ({preset=0,position=0,width:bandWidth=1,contrast=1,gamma=1,outputWidth=width,outputHeight=height}={})=>{
+  /** @type {Float32Array|null} */ let edges=null;
+  /** @type {Float32Array|null} */ let sharpened=null;
+  let amount=0;
+  // Sharpening steepens depth edges before toning: depth plus its own high-pass.
+  const fieldFor=(/** @type {number} */ s)=>{
+    if(!(s>0))return depth;
+    if(s!==amount||!sharpened){
+      if(!edges){const base=Float32Array.from(depth,value=>Number.isFinite(value)?value:.5),blurred=boxBlur(base,width,height,2);edges=base.map((value,i)=>value-blurred[i]);}
+      const detail=edges;sharpened=Float32Array.from(depth,(value,i)=>value+s*3*detail[i]);amount=s;
+    }
+    return sharpened;
+  };
+  return ({preset=0,position=0,width:bandWidth=1,contrast=1,gamma=1,sharpen=0,outputWidth=width,outputHeight=height}={})=>{
+    const field=fieldFor(Math.max(0,Math.min(1.5,Number.isFinite(sharpen)?sharpen:0)));
     if(!Number.isInteger(outputWidth)||!Number.isInteger(outputHeight)||outputWidth<1||outputHeight<1||outputWidth*outputHeight>16777216)throw new Error('Ugyldig biletstorleik.');
     const curve=toneLuts[Number.isInteger(preset)&&preset>=0&&preset<toneLuts.length?preset:0];
     const steep=Number.isFinite(contrast)?clamp(contrast,.25,4):1,power=Number.isFinite(gamma)?clamp(gamma,.25,4):1;
@@ -65,7 +80,7 @@ export function prepareToneDepth(depth,width,height){
     const lut=steep===1&&power===1?curve:curve.map(value=>clamp(((value/255)**power-.5)*steep+.5,0,1)*255);
     const shift=Number.isFinite(position)?clamp(position,-1,1):0,stretch=Number.isFinite(bandWidth)?clamp(bandWidth,.25,3):1;
     const output=new Uint8ClampedArray(outputWidth*outputHeight*4);
-    const valueAt=(/** @type {number} */ index)=>Number.isFinite(depth[index])?depth[index]:.5;
+    const valueAt=(/** @type {number} */ index)=>Number.isFinite(field[index])?field[index]:.5;
     for(let y=0;y<outputHeight;y++){
       const sy=clamp((y+.5)*height/outputHeight-.5,0,height-1),y0=Math.floor(sy),y1=Math.min(height-1,y0+1),dy=sy-y0;
       for(let x=0;x<outputWidth;x++){

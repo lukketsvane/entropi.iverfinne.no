@@ -10,6 +10,7 @@
 	import { artPrintJob } from '../lib/print/cloud-raster.mjs';
 	import { normalizeDepth, prepareToneDepth, VATHOGRAPHY_PRESETS } from '../lib/vathography.mjs';
 	import { createGallery } from '../lib/gallery.mjs';
+	import { LOOKS, finishArt, photoDetail } from '../lib/finish.mjs';
 	import { estimateImageDepth } from '../../static/pointcloud/tiles.mjs';
 	import { captureSnapshot } from '../../static/pointcloud/panorama.mjs';
 	import '../lib/pointcloud/studio.css';
@@ -25,6 +26,7 @@
 	let printer: PX10Printer | null = null;
 	let shake: ShakeToClear | null = null;
 	let presetSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
+	let lookSlider: ReturnType<typeof attachEdgeQualitySlider> | null = null;
 	let printSession = '';
 	let captureJobId = '';
 	let manualPrint = 0;
@@ -41,6 +43,21 @@
 	let bandWidth = 1;
 	let contrast = $state(1);
 	let gamma = $state(1);
+	let look = $state(0);
+	let lookActive = $state(false);
+	let strength = $state(1);
+	let structure = $state(0);
+	let sharpen = $state(0);
+	let grain = $state(0);
+	let detail: Float32Array | null = null;
+	let level = $state<number | null>(null);
+	let levelTimer: ReturnType<typeof setTimeout> | undefined;
+	let selecting = $state(false);
+	let selected = $state<string[]>([]);
+	let preparedIds = $state<string[]>([]);
+	let selectionArmed = $state(false);
+	const prepared = new Map<string, File>();
+	let preparing = false;
 	let announcement = $state('Trykk for eit djupnebilete. Hald inne medan du panorerer, og slepp for eit panorama.');
 	let progress = $state<number | null>(null);
 	let captured: Pixels | null = null;
@@ -57,7 +74,8 @@
 	let press: { id: string; pointerId: number; x: number; y: number; rect: DOMRect; timer: ReturnType<typeof setTimeout> } | null = null;
 	let pressed = false;
 	let disarmTimer: ReturnType<typeof setTimeout> | undefined;
-	const canShareFiles = (file: File) => typeof navigator.share === 'function' && !!navigator.canShare?.({ files: [file] });
+	const shareable = (files: File[]) => typeof navigator.share === 'function' && !!navigator.canShare?.({ files });
+	const canShareFiles = (file: File) => shareable([file]);
 	let depthBusy = false;
 	let releaseTimer: ReturnType<typeof setTimeout> | undefined;
 	const depthWaiters: { priority: number; resolve: () => void }[] = [];
@@ -70,10 +88,12 @@
 	let panoramaWorker: Worker | null = null;
 	let rejectPanorama: ((error: unknown) => void) | null = null;
 	let lastTap: { time: number; x: number; y: number } | null = null;
-	let artGesture: { id: number; time: number; x: number; y: number; moved: boolean } | null = null;
+	let artGesture: { id: number; time: number; x: number; y: number; moved: boolean; axis: 'x' | 'y' | null } | null = null;
 	const artPointers = new Map<number, { x: number; y: number }>();
 	type Pair = { cx: number; cy: number; distance: number; angle: number };
 	let twoFinger: { mode: 'pending' | 'pinch' | 'rotate' | 'panX' | 'panY'; start: Pair; last: Pair; time: number; turned: number } | null = null;
+	type Spread = { cx: number; cy: number; spread: number };
+	let threeFinger: { mode: 'pending' | 'pinch' | 'panX' | 'panY'; start: Spread; last: Spread } | null = null;
 	let lastTwoTap = 0;
 
 	/** One depth model at a time: a photograph goes ahead of queued uploads, and nothing cancels the other. */
@@ -101,19 +121,21 @@
 	}
 	function clearResult() {
 		if (saveTimer) { if (paintFrame) paint(); saveTone(); }
-		tone = null; frame = null; currentId = null;
+		tone = null; frame = null; currentId = null; detail = null;
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
-		artPointers.clear(); artGesture = null; twoFinger = null;
+		artPointers.clear(); artGesture = null; twoFinger = null; threeFinger = null;
 	}
 	function paint() {
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
 		if (!tone || !frame || !art) return;
-		renderArt(art, tone, frame, recipe());
+		renderArt(art, tone, frame, recipe(), detail);
 	}
 	type Frame = { width: number; height: number; mask: Uint8Array | null };
-	function renderArt(canvas: HTMLCanvasElement, render: ReturnType<typeof prepareToneDepth>, target: Frame, values: { preset: number; position: number; width: number; contrast?: number; gamma?: number }) {
+	type Recipe = ReturnType<typeof recipe>;
+	function renderArt(canvas: HTMLCanvasElement, render: ReturnType<typeof prepareToneDepth>, target: Frame, values: Partial<Recipe>, texture: Float32Array | null = null) {
 		const { width, height, mask } = target;
 		const pixels = render({ ...values, outputWidth: width, outputHeight: height });
+		finishArt(pixels, width, height, values, texture);
 		// Panorama areas without a photographed view stay black.
 		if (mask) for (let i = 0; i < mask.length; i++) if (mask[i]) pixels[i * 4] = pixels[i * 4 + 1] = pixels[i * 4 + 2] = 0;
 		if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
@@ -129,7 +151,42 @@
 		if (id) void thumbnail().then(image => gallery.update(id, values, image)).catch(() => {});
 	}
 	function recipe() {
-		return { preset, position, width: bandWidth, contrast, gamma };
+		return { preset, position, width: bandWidth, contrast, gamma, look, strength, structure, sharpen, grain };
+	}
+	function applyRecipe(values: Partial<Recipe>) {
+		preset = values.preset ?? preset; presetSlider?.setLevel(preset);
+		look = values.look ?? 0; lookSlider?.setLevel(look);
+		position = values.position ?? 0; bandWidth = values.width ?? 1; contrast = values.contrast ?? 1; gamma = values.gamma ?? 1;
+		strength = values.strength ?? 1; structure = values.structure ?? 0; sharpen = values.sharpen ?? 0; grain = values.grain ?? 0;
+	}
+	function showLevel(value: number) {
+		level = Math.max(0, Math.min(1, value));
+		clearTimeout(levelTimer); levelTimer = setTimeout(() => { level = null; }, 700);
+	}
+	function jpeg(pixels: Pixels): Promise<Blob | null> {
+		const canvas = document.createElement('canvas');
+		canvas.width = pixels.width; canvas.height = pixels.height;
+		canvas.getContext('2d')?.putImageData(new ImageData(new Uint8ClampedArray(pixels.data), pixels.width, pixels.height), 0, 0);
+		return new Promise(resolve => canvas.toBlob(blob => { canvas.width = canvas.height = 1; resolve(blob); }, 'image/jpeg', .9));
+	}
+	async function photoPixels(photo: Blob | undefined, width: number, height: number) {
+		if (!photo) return null;
+		try {
+			const decoded = await decodePhoto(photo);
+			try { return pixelsFor(decoded.source, width, height, Math.max(width, height)); } finally { decoded.close(); }
+		} catch { return null; }
+	}
+	/** The finished image of a gallery item at full size, with the photograph's structure when it was kept. */
+	async function itemFile(id: string) {
+		const record = await gallery.get(id);
+		if (!record) return null;
+		const pixels = await photoPixels(record.photo, record.width, record.height);
+		const canvas = document.createElement('canvas');
+		renderArt(canvas, prepareToneDepth(Float32Array.from(record.depth, value => value / 65535), record.depthWidth, record.depthHeight),
+			{ width: record.width, height: record.height, mask: record.mask ?? null }, record.recipe, pixels ? photoDetail(pixels.data, pixels.width, pixels.height) : null);
+		const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+		canvas.width = canvas.height = 1;
+		return blob ? new File([blob], `entropi-djupn-${id}.png`, { type: 'image/png' }) : null;
 	}
 	function maskFor(pixels: Pixels) {
 		let mask: Uint8Array | null = null;
@@ -142,10 +199,11 @@
 		canvas.getContext('2d')?.drawImage(source, (source.width - side) / 2, (source.height - side) / 2, side, side, 0, 0, 240, 240);
 		return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .8));
 	}
-	async function archive(id: number, field: Float32Array, depthWidth: number, depthHeight: number) {
+	async function archive(id: number, field: Float32Array, depthWidth: number, depthHeight: number, pixels: Pixels) {
 		if (!frame) return;
 		try {
-			const item = { ...frame, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth, depthHeight, recipe: recipe() };
+			const photo = await jpeg(pixels) ?? undefined;
+			const item = { ...frame, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth, depthHeight, recipe: recipe(), photo };
 			const saved = await gallery.save(item, await thumbnail());
 			if (id === generation && mode === 'done') currentId = saved;
 		} catch { /* The image stays usable without local storage. */ }
@@ -206,10 +264,11 @@
 		const prediction = await withDepth(0, () => estimateImageDepth(pixels, estimator, () => {}));
 		const field = normalizeDepth(prediction.depth), values = recipe();
 		const target = { width: pixels.width, height: pixels.height, mask: maskFor(pixels) }, canvas = document.createElement('canvas');
-		renderArt(canvas, prepareToneDepth(field, prediction.width, prediction.height), target, values);
+		renderArt(canvas, prepareToneDepth(field, prediction.width, prediction.height), target, values, photoDetail(pixels.data, pixels.width, pixels.height));
 		const image = await thumbnail(canvas);
 		canvas.width = canvas.height = 1;
-		const id = await gallery.complete(job.id, { ...target, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth: prediction.width, depthHeight: prediction.height, recipe: values }, image);
+		const photo = await jpeg(pixels) ?? undefined;
+		const id = await gallery.complete(job.id, { ...target, depth: Uint16Array.from(field, value => Math.round(value * 65535)), depthWidth: prediction.width, depthHeight: prediction.height, recipe: values, photo }, image);
 		return image ? { id, created: Date.now(), url: URL.createObjectURL(image) } : null;
 	}
 	function uploadToGallery(event: Event) {
@@ -219,8 +278,8 @@
 	}
 	function tileDown(event: PointerEvent, item: { id: string; url: string }) {
 		cancelPress();
-		if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
 		pressed = false;
+		if (selecting || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
 		const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
 		press = { id: item.id, pointerId: event.pointerId, x: event.clientX, y: event.clientY, rect, timer: setTimeout(() => {
 			press = null; pressed = true; void openMenu(item, rect);
@@ -235,7 +294,59 @@
 	}
 	function tileClick(id: string) {
 		if (pressed) { pressed = false; return; }
-		void openItem(id);
+		if (selecting) toggleSelected(id); else void openItem(id);
+	}
+	function toggleSelecting(id?: string) {
+		closeMenu();
+		selecting = id ? true : !selecting; selectionArmed = false;
+		selected = id ? [id] : [];
+		if (!selecting) { prepared.clear(); preparedIds = []; }
+		else void prepareSelection();
+		announcement = selecting ? 'Vel bilete. Trykk på bileta du vil ha med.' : 'Utval avslutta.';
+	}
+	function toggleSelected(id: string) {
+		selected = selected.includes(id) ? selected.filter(item => item !== id) : [...selected, id];
+		selectionArmed = false;
+		announcement = `${selected.length} valt.`;
+		void prepareSelection();
+	}
+	/** Render the full images as they are chosen, so share and save run straight from the tap. */
+	async function prepareSelection() {
+		if (preparing) return;
+		preparing = true;
+		try {
+			for (let id = selected.find(item => !prepared.has(item)); id && selecting; id = selected.find(item => !prepared.has(item))) {
+				const file = await itemFile(id).catch(() => null);
+				if (!file) { selected = selected.filter(item => item !== id); continue; }
+				prepared.set(id, file); preparedIds = [...prepared.keys()];
+			}
+		} finally { preparing = false; }
+	}
+	const selectionReady = () => selected.length > 0 && selected.every(id => preparedIds.includes(id));
+	const selectionFiles = () => selected.map(id => prepared.get(id)).filter((file): file is File => !!file);
+	function shareFiles(files: File[]) {
+		return typeof navigator.share === 'function' && !!navigator.canShare?.({ files }) ? navigator.share({ files }).then(() => true, () => true) : null;
+	}
+	function saveSelection() {
+		if (!selectionReady()) return;
+		const files = selectionFiles();
+		if (!shareFiles(files)) files.forEach(download);
+	}
+	function shareSelection() {
+		if (selectionReady()) shareFiles(selectionFiles());
+	}
+	async function deleteSelection() {
+		if (!selected.length) return;
+		if (!selectionArmed) { selectionArmed = true; announcement = `Trykk på slett ein gong til for å slette ${selected.length} bilete.`; return; }
+		const ids = selected;
+		try {
+			for (const id of ids) await gallery.remove(id);
+			for (const item of galleryItems) if (ids.includes(item.id)) URL.revokeObjectURL(item.url);
+			galleryItems = galleryItems.filter(item => !ids.includes(item.id));
+			if (currentId && ids.includes(currentId)) { clearTimeout(saveTimer); saveTimer = undefined; currentId = null; }
+			announcement = `${ids.length} bilete sletta.`;
+		} catch { announcement = 'Kunne ikkje slette alle bileta.'; }
+		toggleSelecting();
 	}
 	async function openMenu(item: { id: string; url: string }, rect: DOMRect) {
 		clearTimeout(disarmTimer);
@@ -244,14 +355,8 @@
 		const y = rect.bottom + 64 < window.innerHeight ? rect.bottom + 8 : Math.max(8, rect.top - 60);
 		menu = { id: item.id, file: null, armed: false, x, y };
 		try {
-			const record = await gallery.get(item.id);
-			if (!record || menu?.id !== item.id) return;
-			const canvas = document.createElement('canvas');
-			renderArt(canvas, prepareToneDepth(Float32Array.from(record.depth, value => value / 65535), record.depthWidth, record.depthHeight),
-				{ width: record.width, height: record.height, mask: record.mask ?? null }, record.recipe);
-			const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
-			canvas.width = canvas.height = 1;
-			if (blob && menu?.id === item.id) menu = { ...menu, file: new File([blob], `entropi-djupn-${item.id}.png`, { type: 'image/png' }) };
+			const file = await itemFile(item.id);
+			if (file && menu?.id === item.id) menu = { ...menu, file };
 		} catch { announcement = 'Kunne ikkje klargjere biletet.'; }
 	}
 	function closeMenu() {
@@ -298,6 +403,7 @@
 	function closeGallery() {
 		if (!galleryOpen) return;
 		cancelPress(); closeMenu();
+		if (selecting) toggleSelecting();
 		galleryOpen = false; releaseGallery();
 		if (mode === 'camera') void startCamera();
 	}
@@ -311,8 +417,10 @@
 			captured = null; captureJobId = ''; progress = null; lastTap = null;
 			frame = { width: item.width, height: item.height, mask: item.mask ?? null };
 			tone = prepareToneDepth(Float32Array.from(item.depth, value => value / 65535), item.depthWidth, item.depthHeight);
-			preset = item.recipe.preset; presetSlider?.setLevel(preset); position = item.recipe.position; bandWidth = item.recipe.width;
-			contrast = item.recipe.contrast ?? 1; gamma = item.recipe.gamma ?? 1;
+			applyRecipe(item.recipe);
+			const pixels = await photoPixels(item.photo, item.width, item.height);
+			if (disposed || opening !== generation) return;
+			detail = pixels ? photoDetail(pixels.data, pixels.width, pixels.height) : null;
 			currentId = id; mode = 'done';
 			galleryOpen = false; releaseGallery();
 			if (preview) { preview.active = false; preview.source = null; }
@@ -327,6 +435,13 @@
 		presetSlider?.setLevel(level);
 		try { window.localStorage?.setItem('entropi-vatho', String(level)); } catch {}
 		announcement = `Uttrykk: ${VATHOGRAPHY_PRESETS[level].label}.`;
+		if (mode === 'done') schedulePaint();
+	}
+	function selectLook(level: number) {
+		look = level;
+		lookSlider?.setLevel(level);
+		try { window.localStorage?.setItem('entropi-look', String(level)); } catch {}
+		announcement = `Farge: ${LOOKS[level].label}.`;
 		if (mode === 'done') schedulePaint();
 	}
 	function setPosition(next: number) {
@@ -504,11 +619,12 @@
 			const field = normalizeDepth(prediction.depth);
 			tone = prepareToneDepth(field, prediction.width, prediction.height);
 			frame = { width: pixels.width, height: pixels.height, mask: maskFor(pixels) };
+			detail = photoDetail(pixels.data, pixels.width, pixels.height);
 			mode = 'done'; if (preview) { preview.active = false; preview.source = null; }
 			await tick();
 			if (disposed || id !== generation) return;
 			paint();
-			void archive(id, field, prediction.width, prediction.height);
+			void archive(id, field, prediction.width, prediction.height, pixels);
 			announcement = `${VATHOGRAPHY_PRESETS[preset].label}. Djupna er estimert med ${prediction.model ?? 'Depth Pro 2'}. Dra vassrett for å flytte djupneområdet, og knip for breidda. Dra langs høgre kant for fem uttrykk. Hald inne for utskrift. Dobbelttrykk for eit nytt bilete.`;
 			queueCurrentPrint();
 		} catch (error) { fail(error, id); }
@@ -579,7 +695,7 @@
 		generation++;
 		clearTapBatch();
 		recorder.abort(); stopPanorama(); clearResult(); stopCamera(); captured = null;
-		cancelPress(); closeMenu(); galleryOpen = false; releaseGallery();
+		cancelPress(); closeMenu(); if (selecting) toggleSelecting(); galleryOpen = false; releaseGallery();
 		captureJobId = '';
 		capturePointer = null;
 		progress = null; lastTap = null; mode = 'camera';
@@ -605,20 +721,44 @@
 	const turn = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
 	const limit = (value: number) => Math.max(.25, Math.min(4, value));
 	function resetTone() {
-		position = 0; bandWidth = 1; contrast = 1; gamma = 1;
-		announcement = 'Djupneområde, breidd, kontrast og mellomtonar er nullstilte.';
+		position = 0; bandWidth = 1; contrast = 1; gamma = 1; strength = 1; structure = 0; sharpen = 0; grain = 0;
+		announcement = 'Djupneområde, breidd, kontrast, mellomtonar, struktur, skarpleik, korn og fargestyrke er nullstilte.';
 		if (mode === 'done') schedulePaint();
 	}
 	function artDown(event: PointerEvent) {
 		artPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		if (artPointers.size === 1 && event.isPrimary) {
-			artGesture = { id: event.pointerId, time: performance.now(), x: event.clientX, y: event.clientY, moved: false };
+			artGesture = { id: event.pointerId, time: performance.now(), x: event.clientX, y: event.clientY, moved: false, axis: null };
 			return;
 		}
 		if (artGesture) artGesture.moved = true;
 		lastTap = null;
-		const start = pair();
+		const start = pair(), three = spread();
 		twoFinger = artPointers.size === 2 && start ? { mode: 'pending', start, last: start, time: performance.now(), turned: 0 } : null;
+		threeFinger = three ? { mode: 'pending', start: three, last: three } : null;
+	}
+	function spread(): Spread | null {
+		const points = [...artPointers.values()];
+		if (points.length !== 3) return null;
+		const cx = points.reduce((sum, p) => sum + p.x, 0) / 3, cy = points.reduce((sum, p) => sum + p.y, 0) / 3;
+		return { cx, cy, spread: points.reduce((sum, p) => sum + Math.hypot(p.x - cx, p.y - cy), 0) / 3 };
+	}
+	function threeFingerMove() {
+		const now = spread(), gesture = threeFinger;
+		if (!now || !gesture) return;
+		const { start, last } = gesture;
+		if (gesture.mode === 'pending') {
+			const dx = now.cx - start.cx, dy = now.cy - start.cy;
+			if (Math.abs(Math.log(now.spread / Math.max(1, start.spread))) > .1) gesture.mode = 'pinch';
+			else if (Math.hypot(dx, dy) > 16) gesture.mode = Math.abs(dx) > Math.abs(dy) ? 'panX' : 'panY';
+			else return;
+		}
+		const width = Math.max(1, art?.clientWidth || 1), height = Math.max(1, art?.clientHeight || 1);
+		if (gesture.mode === 'pinch' && last.spread > 0) { strength = Math.max(0, Math.min(1, strength + Math.log(now.spread / last.spread) * 1.2)); showLevel(strength); }
+		else if (gesture.mode === 'panX') { sharpen = Math.max(0, Math.min(1.5, sharpen + (now.cx - last.cx) / width * 1.5)); showLevel(sharpen / 1.5); }
+		else if (gesture.mode === 'panY') { grain = Math.max(0, Math.min(1, grain - (now.cy - last.cy) / height * 1.5)); showLevel(grain); }
+		gesture.last = now;
+		schedulePaint();
 	}
 	function twoFingerMove() {
 		const now = pair(), gesture = twoFinger;
@@ -633,9 +773,9 @@
 			else return;
 		}
 		const width = Math.max(1, art?.clientWidth || 1), height = Math.max(1, art?.clientHeight || 1);
-		if (gesture.mode === 'pinch' && last.distance > 0) bandWidth = Math.max(.25, Math.min(3, bandWidth * now.distance / last.distance));
-		else if (gesture.mode === 'panX') contrast = limit(contrast * Math.exp((now.cx - last.cx) / width * 2));
-		else if (gesture.mode === 'panY') gamma = limit(gamma * Math.exp((now.cy - last.cy) / height * 2));
+		if (gesture.mode === 'pinch' && last.distance > 0) { bandWidth = Math.max(.25, Math.min(3, bandWidth * now.distance / last.distance)); showLevel((bandWidth - .25) / 2.75); }
+		else if (gesture.mode === 'panX') { contrast = limit(contrast * Math.exp((now.cx - last.cx) / width * 2)); showLevel(.5 + Math.log(contrast) / Math.log(16)); }
+		else if (gesture.mode === 'panY') { gamma = limit(gamma * Math.exp((now.cy - last.cy) / height * 2)); showLevel(.5 - Math.log(gamma) / Math.log(16)); }
 		else if (gesture.mode === 'rotate') {
 			// A dial: every 30 degrees turns to the next expression.
 			gesture.turned += turn(now.angle - last.angle);
@@ -644,6 +784,7 @@
 				gesture.turned -= steps * Math.PI / 6;
 				const count = VATHOGRAPHY_PRESETS.length;
 				selectPreset(((preset + steps) % count + count) % count);
+				showLevel(preset / (count - 1));
 			}
 		}
 		gesture.last = now;
@@ -658,8 +799,15 @@
 		if (artPointers.size === 1 && artGesture?.id === event.pointerId) {
 			if (!artGesture.moved && Math.hypot(next.x - artGesture.x, next.y - artGesture.y) <= 12) return;
 			artGesture.moved = true;
-			setPosition(position + (next.x - last.x) / Math.max(1, art?.clientWidth || 1));
+			artGesture.axis ??= Math.abs(next.x - artGesture.x) > Math.abs(next.y - artGesture.y) ? 'x' : 'y';
+			if (artGesture.axis === 'x') { setPosition(position + (next.x - last.x) / Math.max(1, art?.clientWidth || 1)); showLevel((position + 1) / 2); }
+			else {
+				// Up brings in more of the photograph's own structure.
+				structure = Math.max(0, Math.min(1, structure - (next.y - last.y) / Math.max(1, art?.clientHeight || 1) * 1.5));
+				showLevel(structure); schedulePaint();
+			}
 		} else if (artPointers.size === 2) twoFingerMove();
+		else if (artPointers.size === 3) threeFingerMove();
 	}
 	function endTwoFinger() {
 		const gesture = twoFinger;
@@ -671,6 +819,7 @@
 	}
 	function artUp(event: PointerEvent) {
 		artPointers.delete(event.pointerId);
+		if (threeFinger && artPointers.size < 3) threeFinger = null;
 		if (twoFinger && artPointers.size < 2) endTwoFinger();
 		const start = artGesture;
 		if (!start || start.id !== event.pointerId) return;
@@ -685,19 +834,24 @@
 	}
 	function artCancel(event: PointerEvent) {
 		artPointers.delete(event.pointerId);
+		if (artPointers.size < 3) threeFinger = null;
 		if (artPointers.size < 2) twoFinger = null;
 		if (artGesture?.id === event.pointerId) artGesture = null;
 	}
 	function keys(event: KeyboardEvent) {
 		if (event.key !== 'Escape') return;
-		if (menu) closeMenu(); else if (galleryOpen) closeGallery(); else void retake();
+		if (menu) closeMenu(); else if (selecting) toggleSelecting(); else if (galleryOpen) closeGallery(); else void retake();
 	}
 	onMount(() => {
 		printSession = globalThis.crypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
 		try {
 			const saved = window.localStorage?.getItem('entropi-vatho');
 			if (saved && /^[0-4]$/.test(saved)) preset = Number(saved);
+			const savedLook = Number(window.localStorage?.getItem('entropi-look'));
+			if (Number.isInteger(savedLook) && savedLook >= 0 && savedLook < LOOKS.length) look = savedLook;
 		} catch {}
+		lookSlider = attachEdgeQualitySlider(window, {edge: 'left', levels: LOOKS.length, initialLevel: look, onLevel: selectLook,
+			onActive: active => { lookActive = active; }});
 		presetSlider = attachEdgeQualitySlider(window, {levels: VATHOGRAPHY_PRESETS.length, initialLevel: preset, onLevel: selectPreset,
 			onActive: active => { presetActive = active; }});
 		shake = new ShakeToClear({ target: window, hasDraft: () => recorder.active || pendingTaps.length > 0 || mode !== 'camera', clear: clearCanvas });
@@ -742,6 +896,7 @@
 		return () => {
 			disposed = true; generation++; clearTimeout(resumeTimer); clearTapBatch(); recorder.abort();
 			presetSlider?.dispose(); presetSlider = null;
+			lookSlider?.dispose(); lookSlider = null; clearTimeout(levelTimer);
 			shake?.dispose(); shake = null;
 			window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
 			window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume);
@@ -781,12 +936,16 @@
 	{:else if mode === 'error'}
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
-	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Éin finger vassrett flyttar djupneområdet. To fingrar: knip for breidda, dra vassrett for kontrast, dra loddrett for mellomtonar, vri for å skifte mellom fem uttrykk, og dobbelttrykk for å nullstille. Dra langs høgre kant for uttrykka. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
+	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Éin finger vassrett flyttar djupneområdet. To fingrar: knip for breidda, dra vassrett for kontrast, dra loddrett for mellomtonar, vri for å skifte mellom fem uttrykk, og dobbelttrykk for å nullstille. Éin finger loddrett gir struktur frå fotoet. Tre fingrar: loddrett for korn, vassrett for skarpleik, knip for fargestyrke. Dra langs høgre kant for uttrykka og langs venstre kant for fargar. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
 		<canvas bind:this={art}></canvas>
 	</div>
 	<div class="quality-rail" class:active={presetActive} aria-hidden="true">
 		{#each [4, 3, 2, 1, 0] as level, index}<i class:chosen={preset === level} style:top={`${index * 20 + 10}%`}></i>{/each}
 	</div>
+	<div class="quality-rail primitive-rail" class:active={lookActive} aria-hidden="true">
+		{#each LOOKS.map((_, index) => LOOKS.length - 1 - index) as level, index}<i class:chosen={look === level} style:top={`${(index + .5) * 100 / LOOKS.length}%`} style:background={`linear-gradient(90deg, rgb(${LOOKS[level].stops[0][1]}), rgb(${LOOKS[level].stops.at(-1)?.[1]}))`}></i>{/each}
+	</div>
+	{#if level !== null}<div class="level" aria-hidden="true"><i style:width={`${level * 100}%`}></i></div>{/if}
 	{#if mode === 'done'}
 		<button class="access-control" type="button" aria-label="Ta eit nytt bilete" onclick={retake}><i class="plus" aria-hidden="true"></i></button>
 		<a class="access-control download" href="/" download="entropi-djupn.png" aria-label="Last ned djupnebiletet" onclick={saveArt}><i class="download-mark" aria-hidden="true"></i></a>
@@ -797,20 +956,41 @@
 	{#if galleryOpen}
 		<div class="gallery" role="dialog" aria-modal="true" aria-label="Galleri">
 			<button class="gallery-upload" type="button" aria-label="Last opp bilete til galleriet. Fleire bilete kan veljast samstundes." onclick={() => uploadInput?.click()}><i class="plus" aria-hidden="true"></i></button>
+			<button class="gallery-select" class:active={selecting} type="button" aria-pressed={selecting} aria-label={selecting ? 'Avslutt utval' : 'Vel fleire bilete'} onclick={() => toggleSelecting()}>
+				<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M8.5 12.2l2.4 2.4 4.6-5" /></svg>
+			</button>
 			<button class="gallery-close" type="button" aria-label="Lukk galleriet" onclick={closeGallery}><i class="plus close" aria-hidden="true"></i></button>
 			<div class="gallery-grid">
 				{#each { length: uploading }, index (index)}
 					<div class="pending" aria-hidden="true"><div class="progress indeterminate"><i style:width="28%"></i></div></div>
 				{/each}
 				{#each galleryItems as item (item.id)}
-					<button type="button" class:held={menu?.id === item.id} aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}. Hald inne for å lagre, dele eller slette.`}
+					<button type="button" class:held={menu?.id === item.id} class:selected={selecting && selected.includes(item.id)} aria-pressed={selecting ? selected.includes(item.id) : undefined} aria-label={`Opne djupnebilete frå ${new Date(item.created).toLocaleString('nn-NO')}. Hald inne for å lagre, dele eller slette.`}
 						onpointerdown={event => tileDown(event, item)} onpointermove={tileMove} onpointerup={cancelPress} onpointercancel={cancelPress}
 						oncontextmenu={event => event.preventDefault()} onclick={() => tileClick(item.id)}><img src={item.url} alt="" /></button>
 				{/each}
 			</div>
+			{#if selecting && selected.length}
+				<div class="quick-menu selection-bar" role="toolbar" aria-label={`${selected.length} valde bilete`}>
+					<button type="button" aria-label={`Lagre ${selected.length} bilete i bilete`} disabled={!selectionReady()} onclick={saveSelection}>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" /></svg>
+					</button>
+					{#if selectionReady() && shareable(selectionFiles())}
+						<button type="button" aria-label={`Del ${selected.length} bilete`} onclick={shareSelection}>
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M8 8l4-4 4 4M7 11H5v9h14v-9h-2" /></svg>
+						</button>
+					{/if}
+					<button type="button" class:armed={selectionArmed} aria-label={selectionArmed ? `Stadfest sletting av ${selected.length} bilete` : `Slett ${selected.length} bilete`} onclick={deleteSelection}>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6" /></svg>
+					</button>
+				</div>
+			{/if}
 			{#if menu}
 				<div class="menu-catcher" role="presentation" onpointerdown={closeMenu}></div>
 				<div class="quick-menu" role="menu" aria-label="Handlingar for biletet" style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
+					<button type="button" role="menuitem" aria-label="Vel fleire bilete, med dette" onclick={() => menu && toggleSelecting(menu.id)}>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M8.5 12.2l2.4 2.4 4.6-5" /></svg>
+					</button>
 					<button type="button" role="menuitem" aria-label="Lagre i bilete" disabled={!menu.file} onclick={saveMenu}>
 						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" /></svg>
 					</button>
@@ -831,6 +1011,11 @@
 	<input class="sr-only" type="range" min="0" max="4" step="1" value={preset} aria-label="Djupneuttrykk" aria-valuetext={VATHOGRAPHY_PRESETS[preset].label} oninput={event => selectPreset(Number(event.currentTarget.value))} />
 	<input class="sr-only" type="range" min="-1" max="1" step="0.02" value={position} aria-label="Djupneområde" oninput={event => setPosition(Number(event.currentTarget.value))} />
 	<input class="sr-only" type="range" min="0.25" max="4" step="0.05" value={contrast} aria-label="Kontrast" oninput={event => { contrast = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
+	<input class="sr-only" type="range" min="0" max={LOOKS.length - 1} step="1" value={look} aria-label="Fargeuttrykk" aria-valuetext={LOOKS[look].label} oninput={event => selectLook(Number(event.currentTarget.value))} />
+	<input class="sr-only" type="range" min="0" max="1" step="0.05" value={structure} aria-label="Struktur frå fotoet" oninput={event => { structure = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
+	<input class="sr-only" type="range" min="0" max="1.5" step="0.05" value={sharpen} aria-label="Skarpleik" oninput={event => { sharpen = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
+	<input class="sr-only" type="range" min="0" max="1" step="0.05" value={grain} aria-label="Korn" oninput={event => { grain = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
+	<input class="sr-only" type="range" min="0" max="1" step="0.05" value={strength} aria-label="Fargestyrke" oninput={event => { strength = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
 	<input class="sr-only" type="range" min="0.25" max="4" step="0.05" value={gamma} aria-label="Mellomtonar, lågare er lysare" oninput={event => { gamma = Number(event.currentTarget.value); if (mode === 'done') schedulePaint(); }} />
 	<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
 	<span class="sr-only" role="status" aria-live="polite">{printerAnnouncement}</span>

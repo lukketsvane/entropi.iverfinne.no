@@ -10,6 +10,7 @@ import { WIDTH, PRINTER_NAME, buildPrintJob, joinBytes } from '../src/lib/print/
 import { PX10Printer } from '../src/lib/print/printer.mjs';
 import * as vathography from '../src/lib/vathography.mjs';
 import { createGallery } from '../src/lib/gallery.mjs';
+import * as finish from '../src/lib/finish.mjs';
 import { memoryIndexedDB } from './helpers/indexeddb.mjs';
 
 const script = fs.readFileSync('src/routes/+page.svelte', 'utf8').split('<script lang="ts">')[1].split('</script>')[0];
@@ -17,6 +18,8 @@ const compiled = ts.transpileModule(script + `
 export const harness = {
   beginCapture, endCapture, captureClick, retake, retry, artDown, artMove, artUp, selectPreset, openGallery, closeGallery, openItem, keys, uploadToGallery, tileDown, tileMove, cancelPress, tileClick, saveMenu, shareMenu, deleteMenu,
   get menu(){ return menu; }, get contrast(){ return contrast; }, get gamma(){ return gamma; },
+  get look(){ return look; }, get structure(){ return structure; }, get sharpen(){ return sharpen; }, get grain(){ return grain; }, get strength(){ return strength; },
+  get level(){ return level; }, get selecting(){ return selecting; }, get selected(){ return selected; }, toggleSelecting, saveSelection, shareSelection, deleteSelection, selectionReady,
   get uploading(){ return uploading; },
   get galleryOpen(){ return galleryOpen; }, get galleryItems(){ return galleryItems; }, get currentId(){ return currentId; },
   get mode(){ return mode; }, get printer(){ return printer; }, get announcement(){ return announcement; },
@@ -76,6 +79,7 @@ function fixture(withBluetooth = true, { motionPermission = 'unsupported', depth
     '../lib/print/cloud-raster.mjs': { artPrintJob: source => { assert.equal(source, art); return paper; } },
     '../lib/vathography.mjs': vathography,
     '../lib/gallery.mjs': { createGallery: () => createGallery(database ?? undefined) },
+    '../lib/finish.mjs': finish,
     '../../static/pointcloud/tiles.mjs': { estimateImageDepth: async () => {
       if (depthGate) await depthGate;
       estimates++;
@@ -486,4 +490,88 @@ test('contrast and midtones are kept with the image in the gallery', async t => 
   await camera.harness.retake(); await camera.harness.openGallery();
   await camera.harness.openItem(camera.harness.galleryItems[0].id);
   assert.equal(camera.harness.contrast, kept);
+});
+
+const fingers = (camera, frames) => {
+  const { harness, point } = camera, ids = frames[0].map((_, i) => i + 1);
+  frames[0].forEach((p, i) => harness.artDown(point(ids[i], ...p)));
+  for (const frame of frames.slice(1)) frame.forEach((p, i) => harness.artMove(point(ids[i], ...p)));
+  frames.at(-1).forEach((p, i) => harness.artUp(point(ids[i], ...p)));
+};
+const glide = (from, by, steps = 12) => Array.from({ length: steps + 1 }, (_, i) => from.map(([x, y]) => [x + by[0] * i / steps, y + by[1] * i / steps]));
+
+test('the left edge chooses a colour look, remembered and applied without inference', async t => {
+  const storage = new Map();
+  const camera = fixture(false, { storage }); t.after(camera.cleanup);
+  const left = camera.slider('left');
+  assert.equal(left.options.levels, finish.LOOKS.length);
+  camera.tap(); await waitFor(() => camera.harness.mode === 'done');
+  const blue = finish.LOOKS.findIndex(look => look.id === 'blue'), count = camera.paints.length;
+  left.select(blue); await waitFor(() => camera.paints.length > count);
+  const image = camera.paints.at(-1);
+  assert.ok(image.data[2] > image.data[0], 'Blue look tints the depth');
+  assert.equal(storage.get('entropi-look'), String(blue)); assert.equal(camera.estimates(), 1);
+});
+
+test('one finger up adds the photograph structure while sideways still moves the depth band', async t => {
+  const camera = await developed(); t.after(camera.cleanup);
+  fingers(camera, glide([[150, 400]], [0, -200]));
+  assert.ok(camera.harness.structure > .5); assert.equal(camera.harness.position, 0);
+  assert.ok(camera.harness.level !== null, 'A thin level line shows while adjusting');
+  await waitFor(() => camera.harness.level === null);
+  fingers(camera, glide([[150, 400]], [40, 0]));
+  assert.ok(camera.harness.position > .3); assert.ok(camera.harness.structure > .5);
+});
+
+test('three fingers set grain up and down, sharpening sideways and colour strength by pinching', async t => {
+  const camera = await developed(); t.after(camera.cleanup);
+  const hand = [[100, 400], [160, 380], [220, 400]];
+  fingers(camera, glide(hand, [0, -120]));
+  assert.ok(camera.harness.grain > .5); assert.equal(camera.harness.sharpen, 0);
+  fingers(camera, glide(hand, [60, 0]));
+  assert.ok(camera.harness.sharpen > .5); assert.ok(camera.harness.grain > .5);
+  const pinch = Array.from({ length: 13 }, (_, i) => hand.map(([x, y]) => [160 + (x - 160) * (1 - i / 24), 393 + (y - 393) * (1 - i / 24)]));
+  fingers(camera, pinch);
+  assert.ok(camera.harness.strength < 1); assert.equal(camera.harness.preset, 1);
+  await waitFor(() => camera.paints.length > 1); assert.equal(camera.estimates(), 1);
+});
+
+test('select mode chooses several tiles and shares, saves or deletes them together', async t => {
+  const database = memoryIndexedDB();
+  const camera = fixture(false, { database, share: () => true }); t.after(camera.cleanup);
+  for (let i = 0; i < 2; i++) { camera.tap(); await waitFor(() => camera.harness.mode === 'done' && camera.harness.currentId); await camera.harness.retake(); }
+  await camera.harness.openGallery(); await waitFor(() => camera.harness.galleryItems.length === 2);
+  const [a, b] = camera.harness.galleryItems;
+  camera.harness.toggleSelecting();
+  camera.harness.tileClick(a.id); camera.harness.tileClick(b.id);
+  assert.deepEqual([...camera.harness.selected], [a.id, b.id]); assert.equal(camera.harness.mode, 'camera', 'Tapping in select mode does not open the image');
+  await waitFor(() => camera.harness.selectionReady());
+  camera.harness.shareSelection();
+  assert.equal(camera.shared.length, 1); assert.equal(camera.shared[0].files.length, 2);
+  await camera.harness.deleteSelection(); assert.equal(camera.harness.galleryItems.length, 2, 'The first delete only arms');
+  await camera.harness.deleteSelection();
+  assert.equal(camera.harness.galleryItems.length, 0); assert.equal(camera.harness.selecting, false);
+  const next = fixture(false, { database }); t.after(next.cleanup);
+  await next.harness.openGallery(); assert.equal(next.harness.galleryItems.length, 0);
+});
+
+test('the quick menu can start a selection, and Escape leaves select mode before the gallery', async t => {
+  const camera = await galleryWithImage(); t.after(camera.cleanup);
+  await longPress(camera);
+  camera.harness.toggleSelecting(camera.harness.menu.id);
+  assert.equal(camera.harness.selecting, true); assert.equal(camera.harness.selected.length, 1); assert.equal(camera.harness.menu, null);
+  camera.harness.keys({ key: 'Escape' });
+  assert.equal(camera.harness.selecting, false); assert.equal(camera.harness.galleryOpen, true);
+});
+
+test('a reopened gallery image keeps its colour look and photo structure', async t => {
+  const camera = await developed(); t.after(camera.cleanup);
+  await waitFor(() => camera.harness.currentId);
+  camera.slider('left').select(2);
+  fingers(camera, glide([[150, 400]], [0, -150]));
+  const kept = camera.harness.structure;
+  await new Promise(done => setTimeout(done, 700));
+  await camera.harness.retake(); camera.slider('left').select(0);
+  await camera.harness.openGallery(); await camera.harness.openItem(camera.harness.galleryItems[0].id);
+  assert.equal(camera.harness.look, 2); assert.equal(camera.harness.structure, kept);
 });

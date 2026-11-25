@@ -1,4 +1,4 @@
-Entropi photo-to-point-cloud uses Apple Depth Pro 2 S from
+Entropi depth lithography uses Apple Depth Pro 2 S (WASM) and B (WebGPU) from
 apple-aiml-research/ml-depth-pro-2, revision
 aa389cbb0b74341664ed663a0966c859905cd6c0. The ONNX file is a derivative of the
 official checkpoint, exported by scripts/export-depth-pro-2.py with 8-bit
@@ -7,8 +7,8 @@ in models/manifest.json. The weights are licensed exclusively for
 non-commercial research under the Apple Machine Learning Research Model
 license: models/LICENSE.txt.
 
-ONNX Runtime Web 1.30.0 is MIT licensed. The JavaScript modules are vendored;
-the matching WASM binary is fetched from the pinned jsDelivr npm distribution
+ONNX Runtime Web 1.30.0 is MIT licensed. The JavaScript modules (WASM and
+WebGPU builds) are vendored; the matching WASM binaries are fetched from the pinned jsDelivr npm distribution
 and verified against models/manifest.json. License: vendor/ONNXRUNTIME-LICENSE.txt.
 
 Three.js 0.186.1 and OrbitControls are MIT licensed and bundled from the npm

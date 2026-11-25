@@ -1,5 +1,5 @@
-/** @typedef {{preset:number,position:number,width:number,contrast?:number,gamma?:number}} Recipe */
-/** @typedef {{width:number,height:number,mask:Uint8Array|null,depth:Uint16Array,depthWidth:number,depthHeight:number,recipe:Recipe}} Item */
+/** @typedef {{preset:number,position:number,width:number,contrast?:number,gamma?:number,look?:number,strength?:number,structure?:number,sharpen?:number,grain?:number}} Recipe */
+/** @typedef {{width:number,height:number,mask:Uint8Array|null,depth:Uint16Array,depthWidth:number,depthHeight:number,recipe:Recipe,photo?:Blob}} Item */
 /** @typedef {{id:string,created:number,thumbnail:Blob|null}} Entry */
 /** @typedef {{id:string,created:number,file:Blob,name:string,attempts:number}} Pending */
 
