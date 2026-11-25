@@ -10,7 +10,7 @@
 	import { artPrintJob } from '../lib/print/cloud-raster.mjs';
 	import { normalizeDepth, prepareToneDepth, VATHOGRAPHY_PRESETS } from '../lib/vathography.mjs';
 	import { createGallery } from '../lib/gallery.mjs';
-	import { LOOKS, finishArt, photoDetail } from '../lib/finish.mjs';
+	import { LOOKS, DITHERS, finishArt, photoDetail } from '../lib/finish.mjs';
 	import { estimateImageDepth } from '../../static/pointcloud/tiles.mjs';
 	import { captureSnapshot } from '../../static/pointcloud/panorama.mjs';
 	import '../lib/pointcloud/studio.css';
@@ -49,6 +49,10 @@
 	let structure = $state(0);
 	let sharpen = $state(0);
 	let grain = $state(0);
+	let dither = $state(0);
+	let cell = $state(1);
+	let threshold = $state(0);
+	let invert = $state(false);
 	let detail: Float32Array | null = null;
 	let level = $state<number | null>(null);
 	let levelTimer: ReturnType<typeof setTimeout> | undefined;
@@ -94,6 +98,7 @@
 	let twoFinger: { mode: 'pending' | 'pinch' | 'rotate' | 'panX' | 'panY'; start: Pair; last: Pair; time: number; turned: number } | null = null;
 	type Spread = { cx: number; cy: number; spread: number };
 	let threeFinger: { mode: 'pending' | 'pinch' | 'panX' | 'panY'; start: Spread; last: Spread } | null = null;
+	let fourFinger: { mode: 'pending' | 'pinch' | 'panX' | 'panY'; start: Spread; last: Spread; time: number; travel: number } | null = null;
 	let lastTwoTap = 0;
 
 	/** One depth model at a time: a photograph goes ahead of queued uploads, and nothing cancels the other. */
@@ -140,7 +145,7 @@
 		if (saveTimer) { if (paintFrame) paint(); saveTone(); }
 		tone = null; frame = null; currentId = null; detail = null;
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
-		artPointers.clear(); artGesture = null; twoFinger = null; threeFinger = null;
+		artPointers.clear(); artGesture = null; twoFinger = null; threeFinger = null; fourFinger = null;
 	}
 	function paint() {
 		cancelAnimationFrame(paintFrame); paintFrame = 0;
@@ -168,13 +173,14 @@
 		if (id) void thumbnail().then(image => gallery.update(id, values, image)).catch(() => {});
 	}
 	function recipe() {
-		return { preset, position, width: bandWidth, contrast, gamma, look, strength, structure, sharpen, grain };
+		return { preset, position, width: bandWidth, contrast, gamma, look, strength, structure, sharpen, grain, dither, cell, threshold, invert };
 	}
 	function applyRecipe(values: Partial<Recipe>) {
 		preset = values.preset ?? preset; presetSlider?.setLevel(preset);
 		look = values.look ?? 0; lookSlider?.setLevel(look);
 		position = values.position ?? 0; bandWidth = values.width ?? 1; contrast = values.contrast ?? 1; gamma = values.gamma ?? 1;
 		strength = values.strength ?? 1; structure = values.structure ?? 0; sharpen = values.sharpen ?? 0; grain = values.grain ?? 0;
+		dither = values.dither ?? 0; cell = values.cell ?? 1; threshold = values.threshold ?? 0; invert = values.invert ?? false;
 	}
 	function showLevel(value: number) {
 		level = Math.max(0, Math.min(1, value));
@@ -750,7 +756,8 @@
 	const limit = (value: number) => Math.max(.25, Math.min(4, value));
 	function resetTone() {
 		position = 0; bandWidth = 1; contrast = 1; gamma = 1; strength = 1; structure = 0; sharpen = 0; grain = 0;
-		announcement = 'Djupneområde, breidd, kontrast, mellomtonar, struktur, skarpleik, korn og fargestyrke er nullstilte.';
+		dither = 0; cell = 1; threshold = 0; invert = false;
+		announcement = 'Djupneområde, breidd, kontrast, mellomtonar, struktur, skarpleik, korn, fargestyrke og dithering er nullstilte.';
 		if (mode === 'done') schedulePaint();
 	}
 	function artDown(event: PointerEvent) {
@@ -761,15 +768,51 @@
 		}
 		if (artGesture) artGesture.moved = true;
 		lastTap = null;
-		const start = pair(), three = spread();
+		const start = pair(), three = spread(), four = spread(4);
 		twoFinger = artPointers.size === 2 && start ? { mode: 'pending', start, last: start, time: performance.now(), turned: 0 } : null;
 		threeFinger = three ? { mode: 'pending', start: three, last: three } : null;
+		fourFinger = four ? { mode: 'pending', start: four, last: four, time: performance.now(), travel: 0 } : null;
 	}
-	function spread(): Spread | null {
+	function spread(count = 3): Spread | null {
 		const points = [...artPointers.values()];
-		if (points.length !== 3) return null;
-		const cx = points.reduce((sum, p) => sum + p.x, 0) / 3, cy = points.reduce((sum, p) => sum + p.y, 0) / 3;
-		return { cx, cy, spread: points.reduce((sum, p) => sum + Math.hypot(p.x - cx, p.y - cy), 0) / 3 };
+		if (points.length !== count) return null;
+		const cx = points.reduce((sum, p) => sum + p.x, 0) / count, cy = points.reduce((sum, p) => sum + p.y, 0) / count;
+		return { cx, cy, spread: points.reduce((sum, p) => sum + Math.hypot(p.x - cx, p.y - cy), 0) / count };
+	}
+	/** Four fingers dither: across turns through the styles, up grows the dots, a pinch moves the threshold, a tap inverts. */
+	function fourFingerMove() {
+		const now = spread(4), gesture = fourFinger;
+		if (!now || !gesture) return;
+		const { start, last } = gesture;
+		if (gesture.mode === 'pending') {
+			const dx = now.cx - start.cx, dy = now.cy - start.cy;
+			if (Math.abs(Math.log(now.spread / Math.max(1, start.spread))) > .1) gesture.mode = 'pinch';
+			else if (Math.hypot(dx, dy) > 16) gesture.mode = Math.abs(dx) > Math.abs(dy) ? 'panX' : 'panY';
+			else return;
+		}
+		const width = Math.max(1, art?.clientWidth || 1), height = Math.max(1, art?.clientHeight || 1);
+		if (gesture.mode === 'pinch' && last.spread > 0) { threshold = Math.max(-1, Math.min(1, threshold + Math.log(now.spread / last.spread) * 1.5)); showLevel((threshold + 1) / 2); }
+		else if (gesture.mode === 'panY') { cell = Math.max(1, Math.min(20, cell - (now.cy - last.cy) / height * 30)); showLevel((cell - 1) / 19); }
+		else if (gesture.mode === 'panX') {
+			gesture.travel += (now.cx - last.cx) / width;
+			const steps = Math.trunc(gesture.travel / .12);
+			if (steps) {
+				gesture.travel -= steps * .12;
+				dither = ((dither + steps) % DITHERS.length + DITHERS.length) % DITHERS.length;
+				showLevel(dither / (DITHERS.length - 1));
+				announcement = `Dithering: ${DITHERS[dither].label}.`;
+			}
+		}
+		gesture.last = now;
+		schedulePaint();
+	}
+	function endFourFinger() {
+		const gesture = fourFinger;
+		fourFinger = null;
+		if (!gesture || gesture.mode !== 'pending' || performance.now() - gesture.time > 350 || mode !== 'done') return;
+		invert = !invert;
+		announcement = invert ? 'Invertert.' : 'Ikkje invertert.';
+		schedulePaint();
 	}
 	function threeFingerMove() {
 		const now = spread(), gesture = threeFinger;
@@ -836,6 +879,7 @@
 			}
 		} else if (artPointers.size === 2) twoFingerMove();
 		else if (artPointers.size === 3) threeFingerMove();
+		else if (artPointers.size === 4) fourFingerMove();
 	}
 	function endTwoFinger() {
 		const gesture = twoFinger;
@@ -847,6 +891,7 @@
 	}
 	function artUp(event: PointerEvent) {
 		artPointers.delete(event.pointerId);
+		if (fourFinger && artPointers.size < 4) endFourFinger();
 		if (threeFinger && artPointers.size < 3) threeFinger = null;
 		if (twoFinger && artPointers.size < 2) endTwoFinger();
 		const start = artGesture;
@@ -862,6 +907,7 @@
 	}
 	function artCancel(event: PointerEvent) {
 		artPointers.delete(event.pointerId);
+		if (artPointers.size < 4) fourFinger = null;
 		if (artPointers.size < 3) threeFinger = null;
 		if (artPointers.size < 2) twoFinger = null;
 		if (artGesture?.id === event.pointerId) artGesture = null;
@@ -984,7 +1030,7 @@
 	{:else if mode === 'error'}
 		<button class="retry-plane" type="button" aria-label="Prøv igjen" onclick={retry}><i class="retry-mark" aria-hidden="true"></i></button>
 	{/if}
-	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Éin finger vassrett flyttar djupneområdet. To fingrar: knip for breidda, dra vassrett for kontrast, dra loddrett for mellomtonar, vri for å skifte mellom fem uttrykk, og dobbelttrykk for å nullstille. Éin finger loddrett gir struktur frå fotoet. Tre fingrar: loddrett for korn, vassrett for skarpleik, knip for fargestyrke. Dra langs høgre kant for uttrykka og langs venstre kant for fargar. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
+	<div class="cloud art" class:hidden={mode !== 'done'} onpointerdown={artDown} onpointermove={artMove} onpointerup={artUp} onpointercancel={artCancel} oncontextmenu={event => event.preventDefault()} role="img" aria-label="Djupnelitografi. Éin finger vassrett flyttar djupneområdet. To fingrar: knip for breidda, dra vassrett for kontrast, dra loddrett for mellomtonar, vri for å skifte mellom fem uttrykk, og dobbelttrykk for å nullstille. Éin finger loddrett gir struktur frå fotoet. Tre fingrar: loddrett for korn, vassrett for skarpleik, knip for fargestyrke. Fire fingrar: vassrett for dithering, loddrett for punktstorleik, knip for terskel, trykk for å invertere. Dra langs høgre kant for uttrykka og langs venstre kant for fargar. Hald inne utan å flytte fingeren for utskrift. Rist for å tømme lerretet. Dobbelttrykk for eit nytt bilete.">
 		<canvas bind:this={art}></canvas>
 	</div>
 	<div class="quality-rail" class:active={presetActive} aria-hidden="true">

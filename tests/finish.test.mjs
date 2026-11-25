@@ -39,3 +39,24 @@ test('box blur keeps a constant field and sharpening steepens depth edges', () =
   assert.ok(Math.abs(sharp[7 * 4] - sharp[8 * 4]) > Math.abs(soft[7 * 4] - soft[8 * 4]));
   assert.deepEqual(tone({ preset: 1, sharpen: 0 }), soft);
 });
+
+test('every dither style turns a ramp into two tones and keeps its average', async () => {
+  const { DITHERS, ditherTone } = await import('../src/lib/finish.mjs');
+  for (const { id } of DITHERS.slice(1)) for (const cell of [1, 6]) {
+    const tone = new Uint8ClampedArray(64 * 64).map((_, i) => (i % 64) * 4);
+    ditherTone(tone, 64, 64, id, cell, 0);
+    assert.ok(tone.every(v => v === 0 || v === 255), id);
+    const mean = tone.reduce((sum, v) => sum + v, 0) / tone.length;
+    assert.ok(Math.abs(mean - 126) < 16, `${id} ${cell}: ${mean}`);
+  }
+});
+
+test('dithering follows the look ramp, and invert swaps its ends', async () => {
+  const { finishArt } = await import('../src/lib/finish.mjs');
+  const pixels = new Uint8ClampedArray(16 * 16 * 4).fill(200);
+  finishArt(pixels, 16, 16, { dither: 1 });
+  assert.ok(pixels.every((v, i) => i % 4 === 3 || v === 0 || v === 255));
+  const inverted = new Uint8ClampedArray(16 * 16 * 4).fill(200);
+  finishArt(inverted, 16, 16, { dither: 1, invert: true });
+  for (let i = 0; i < pixels.length; i += 4) assert.equal(inverted[i], 255 - pixels[i]);
+});

@@ -34,6 +34,81 @@ const grainTile = (() => {
   return tile;
 })();
 
+/** Error-diffusion kernels as [dx, dy, weight] with their divisor. @type {Record<string, [number, number[][]]>} */
+const KERNELS = {
+  floyd: [16, [[1, 0, 7], [-1, 1, 3], [0, 1, 5], [1, 1, 1]]],
+  atkinson: [8, [[1, 0, 1], [2, 0, 1], [-1, 1, 1], [0, 1, 1], [1, 1, 1], [0, 2, 1]]],
+  stucki: [42, [[1, 0, 8], [2, 0, 4], [-2, 1, 2], [-1, 1, 4], [0, 1, 8], [1, 1, 4], [2, 1, 2], [-2, 2, 1], [-1, 2, 2], [0, 2, 4], [1, 2, 2], [2, 2, 1]]],
+  sierra: [32, [[1, 0, 5], [2, 0, 3], [-2, 1, 2], [-1, 1, 4], [0, 1, 5], [1, 1, 4], [2, 1, 2], [-1, 2, 2], [0, 2, 3], [1, 2, 2]]],
+  sierra2: [16, [[1, 0, 4], [2, 0, 3], [-2, 1, 1], [-1, 1, 2], [0, 1, 3], [1, 1, 2], [2, 1, 1]]],
+  sierralite: [4, [[1, 0, 2], [-1, 1, 1], [0, 1, 1]]],
+};
+/** @typedef {{id:string,label:string}} Dither */
+/** @type {readonly Dither[]} */
+export const DITHERS = Object.freeze([
+  { id: 'off', label: 'Av' }, { id: 'floyd', label: 'Floyd–Steinberg' }, { id: 'atkinson', label: 'Atkinson' }, { id: 'stucki', label: 'Stucki' },
+  { id: 'sierra', label: 'Sierra' }, { id: 'sierra2', label: 'To-rads Sierra' }, { id: 'sierralite', label: 'Sierra Lite' }, { id: 'bayer', label: 'Bayer' },
+  { id: 'stipple', label: 'Prikk' }, { id: 'lines', label: 'Linjer' }, { id: 'waves', label: 'Bølgjer' }, { id: 'diamond', label: 'Diamant' },
+].map(dither => Object.freeze(dither)));
+
+const BAYER = (() => {
+  const m = new Float32Array(64);
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+    let v = 0;
+    for (let bit = 0, xc = x ^ y, yc = y; bit < 3; bit++, xc >>= 1, yc >>= 1) v = (v << 2) | ((xc & 1) << 1) | (yc & 1);
+    m[y * 8 + x] = (v + .5) / 64 * 255;
+  }
+  return m;
+})();
+const frac = (/** @type {number} */ v) => v - Math.floor(v);
+
+/** Two-tone dithering of a grey tone, in place. Cell is the dot size; threshold moves the cut (-1…1).
+ * @param {Uint8ClampedArray} tone @param {number} width @param {number} height @param {string} style @param {number} cell @param {number} threshold */
+export function ditherTone(tone, width, height, style, cell = 1, threshold = 0) {
+  const s = Math.max(1, Math.min(20, Math.round(cell))), bias = Math.max(-1, Math.min(1, threshold)) * 127;
+  if (style === 'lines' || style === 'waves' || style === 'diamond') {
+    // Pattern line art in the manner of depth engravings: spacing grows with the cell size.
+    const p = 4 + s * 2;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const i = y * width + x, v = Math.max(0, Math.min(255, tone[i] + bias)) / 255, c = 1 - v;
+      let black;
+      if (style === 'lines') black = frac((y + v * p * 3) / p) < c;
+      else if (style === 'waves') black = frac(y / p + Math.sin(x * Math.PI * 2 / (p * 8)) * (.15 + c * .6)) < c;
+      else {
+        const d = Math.abs(frac(x / p) - .5) + Math.abs(frac(y / p) - .5);
+        black = c <= .5 ? d < Math.sqrt(c / 2) : d <= 1 - Math.sqrt((1 - c) / 2);
+      }
+      tone[i] = black ? 0 : 255;
+    }
+    return tone;
+  }
+  const cw = Math.ceil(width / s), ch = Math.ceil(height / s), grid = new Float32Array(cw * ch), counts = new Float32Array(cw * ch);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) { const g = Math.floor(y / s) * cw + Math.floor(x / s); grid[g] += tone[y * width + x]; counts[g]++; }
+  for (let g = 0; g < grid.length; g++) grid[g] = grid[g] / counts[g] + bias;
+  const out = new Uint8Array(grid.length), kernel = KERNELS[style];
+  if (kernel) {
+    const [divisor, taps] = kernel;
+    for (let y = 0; y < ch; y++) {
+      // Serpentine scanning keeps diffusion from drifting in one direction.
+      const back = y & 1;
+      for (let k = 0; k < cw; k++) {
+        const x = back ? cw - 1 - k : k, g = y * cw + x, old = grid[g], value = old < 128 ? 0 : 255, error = (old - value) / divisor;
+        out[g] = value;
+        for (const [dx, dy, weight] of taps) {
+          const nx = back ? x - dx : x + dx, ny = y + dy;
+          if (nx >= 0 && nx < cw && ny < ch) grid[ny * cw + nx] += error * weight;
+        }
+      }
+    }
+  } else for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+    const g = y * cw + x;
+    const limit = style === 'bayer' ? BAYER[(y & 7) * 8 + (x & 7)] : frac(52.9829189 * frac(.06711056 * x + .00583715 * y)) * 255;
+    out[g] = grid[g] < limit ? 0 : 255;
+  }
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) tone[y * width + x] = out[Math.floor(y / s) * cw + Math.floor(x / s)];
+  return tone;
+}
+
 /** Box blur of a single channel in place-free O(n), used for detail extraction.
  * @param {Float32Array} values @param {number} width @param {number} height @param {number} radius */
 export function boxBlur(values, width, height, radius) {
@@ -70,17 +145,23 @@ export function photoDetail(rgba, width, height) {
 
 /** Turn a greyscale depth tone (RGBA) into the finished look, in place.
  * @param {Uint8ClampedArray} pixels @param {number} width @param {number} height
- * @param {{look?:number,strength?:number,structure?:number,grain?:number}} options @param {Float32Array|null} [detail] */
-export function finishArt(pixels, width, height, { look = 0, strength = 1, structure = 0, grain = 0 } = {}, detail = null) {
+ * @param {{look?:number,strength?:number,structure?:number,grain?:number,dither?:number,cell?:number,threshold?:number,invert?:boolean}} options @param {Float32Array|null} [detail] */
+export function finishArt(pixels, width, height, { look = 0, strength = 1, structure = 0, grain = 0, dither = 0, cell = 1, threshold = 0, invert = false } = {}, detail = null) {
   const ramp = ramps[Number.isInteger(look) && look >= 0 && look < ramps.length ? look : 0];
   const mix = Math.max(0, Math.min(1, strength)), texture = detail ? Math.max(0, Math.min(1, structure)) * 640 : 0, noise = Math.max(0, Math.min(1, grain)) * 48;
-  if (look === 0 && !texture && !noise) return pixels;
+  const style = Number.isInteger(dither) && dither > 0 && dither < DITHERS.length ? DITHERS[dither].id : '';
+  if (look === 0 && !texture && !noise && !style && !invert) return pixels;
+  const tone = new Uint8ClampedArray(width * height);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const i = y * width + x, at = i * 4;
-    let v = pixels[at];
+    const i = y * width + x;
+    let v = pixels[i * 4];
     if (texture) v += (detail?.[i] ?? 0) * texture;
     if (noise) v += grainTile[(y & 255) * 256 + (x & 255)] * noise;
-    v = v < 0 ? 0 : v > 255 ? 255 : v | 0;
+    tone[i] = v;
+  }
+  if (style) ditherTone(tone, width, height, style, cell, threshold);
+  for (let i = 0; i < tone.length; i++) {
+    const v = invert ? 255 - tone[i] : tone[i], at = i * 4;
     for (let c = 0; c < 3; c++) pixels[at + c] = v + (ramp[v * 3 + c] - v) * mix;
   }
   return pixels;
